@@ -4,7 +4,7 @@
 
 | Version | Author | Review Date | Notes |
 |---------|--------|-------------|-------|
-| 1.0 | [Your Name] | 2025-11-13 | Initial document creation |
+| 1.0 | Kendall Kelly | 2025-11-13 | Initial document creation |
 
 ## Overview
 Backend API for an online application enabling customers to order custom-designed nails. The platform connects customers with nail technicians who review, price, create, and ship custom nail orders.
