@@ -1,0 +1,28 @@
+# Database
+
+- **Database System**: PostgreSQL (version 14 or higher recommended)
+  - Open-source relational database
+  - ACID compliant (ensures data integrity)
+  - Strong support for JSON data types (useful for flexible fields)
+  - Excellent performance and reliability
+- **GORM Driver**: gorm.io/driver/postgres
+- **Connection Management**:
+  - Connection pooling via Go's database/sql package
+  - Recommended pool settings:
+    - Max open connections: 25-50 (adjust based on load)
+    - Max idle connections: 5-10
+    - Connection max lifetime: 5 minutes
+- **Database Migrations**:
+  - GORM AutoMigrate for automatic schema updates
+  - Run migrations on application startup in development
+  - Manual migration control recommended for production
+- **Database Naming Conventions**:
+  - Table names: plural, snake_case (e.g., `users`, `nail_orders`, `design_comments`)
+  - Column names: snake_case (e.g., `created_at`, `user_id`, `image_url`)
+  - Primary keys: `id` (auto-incrementing integer or UUID)
+  - Foreign keys: `{table}_id` (e.g., `customer_id`, `order_id`)
+  - Timestamps: `created_at`, `updated_at` (managed by GORM)
+- **Indexes**:
+  - Primary keys automatically indexed
+  - Foreign keys should be indexed for join performance
+  - Additional indexes on frequently queried fields (e.g., user email, order status)
