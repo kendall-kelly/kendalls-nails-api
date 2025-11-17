@@ -1,0 +1,21 @@
+# Backend Framework
+
+- **Language**: Go (Golang) - statically typed, compiled language with excellent performance and concurrency support
+- **Web Framework**: Gin (github.com/gin-gonic/gin)
+  - Lightweight HTTP web framework
+  - Fast routing with radix tree-based router
+  - Middleware support for authentication, logging, error handling
+  - JSON validation and binding
+  - Built-in support for rendering JSON responses
+- **ORM**: GORM (gorm.io/gorm)
+  - Object-Relational Mapping library for Go
+  - Auto migrations (create/update database tables from Go structs)
+  - Relationship support (has-one, has-many, many-to-many, belongs-to)
+  - Hooks (before/after create, update, delete)
+  - Transaction support
+  - Query builder with chainable methods
+- **Architecture**: RESTful API following REST best practices
+  - Resource-based URLs (e.g., /orders, /designs)
+  - Standard HTTP methods (GET, POST, PUT, DELETE)
+  - Stateless communication (authentication via JWT tokens)
+  - JSON request/response format
