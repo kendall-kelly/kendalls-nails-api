@@ -11,7 +11,7 @@ jobs:
     name: Build and Test
     runs-on: ubuntu-latest
     env:
-      TEST_DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/kendalls_nails_test?sslmode=disable"
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/kendalls_nails_test?sslmode=disable"
 
     services:
       postgres:

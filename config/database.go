@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"log"
-	"os"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -12,23 +11,24 @@ import (
 var DB *gorm.DB
 
 // ConnectDatabase establishes a connection to the PostgreSQL database
+// It uses the Config struct to get the appropriate database URL
 func ConnectDatabase() error {
-	// Get database URL from environment variable
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		// Fallback to default local database URL for development
-		databaseURL = "postgresql://postgres:postgres@localhost:5432/kendalls_nails?sslmode=disable"
-		log.Println("DATABASE_URL not set, using default:", databaseURL)
+	// Load configuration
+	cfg, err := Load()
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
+	// Get the appropriate database URL based on environment
+	databaseURL := cfg.GetDatabaseURL()
+
 	// Connect to database
-	var err error
 	DB, err = gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	log.Println("Database connection established successfully")
+	log.Printf("Database connection established successfully (env: %s)", cfg.GoEnv)
 	return nil
 }
 

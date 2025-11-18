@@ -140,11 +140,14 @@ SKIP_DB_TESTS=true go test ./...
 
 ### Custom Test Database
 
-Override the test database URL:
+Override the test database URL by setting `GO_ENV=test` and creating a custom `.env.test` file:
 
 ```bash
-export TEST_DATABASE_URL="postgresql://user:pass@localhost:5432/my_test_db?sslmode=disable"
-go test ./...
+# Create .env.test with your custom database
+echo "DATABASE_URL=postgresql://user:pass@localhost:5432/my_test_db?sslmode=disable" > .env.test
+
+# Run tests
+GO_ENV=test go test ./...
 ```
 
 ## Testing Best Practices
@@ -198,8 +201,11 @@ When setting up CI/CD:
 
 2. **Required environment variables**:
 ```bash
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/kendalls_nails?sslmode=disable
-TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/kendalls_nails_test?sslmode=disable
+# Set GO_ENV to test to use .env.test configuration
+GO_ENV=test
+
+# Or set DATABASE_URL directly
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/kendalls_nails_test?sslmode=disable
 ```
 
 ## Test Maintenance

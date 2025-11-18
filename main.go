@@ -38,9 +38,15 @@ func main() {
 		v1.GET("/database/status", databaseStatus)
 	}
 
+	// Load configuration for port
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
 	// Start server
-	port := ":8080"
-	log.Printf("Server is running on http://localhost%s", port)
+	port := ":" + cfg.Port
+	log.Printf("Server is running on http://localhost%s (env: %s)", port, cfg.GoEnv)
 	if err := router.Run(port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}

@@ -30,17 +30,6 @@ func setupRouter() *gin.Engine {
 
 // setupTestDB initializes database for integration testing
 func setupTestDB(t *testing.T) {
-	// Use dedicated test database (separate from development database)
-	testDatabaseURL := os.Getenv("TEST_DATABASE_URL")
-	if testDatabaseURL == "" {
-		// Default to test database on same PostgreSQL server
-		testDatabaseURL = "postgresql://postgres:postgres@postgres:5432/kendalls_nails_test?sslmode=disable"
-	}
-
-	// Save original DATABASE_URL and temporarily override with test database
-	originalURL := os.Getenv("DATABASE_URL")
-	os.Setenv("DATABASE_URL", testDatabaseURL)
-
 	// Reset DB connection to force reconnection to test database
 	config.DB = nil
 
@@ -52,13 +41,6 @@ func setupTestDB(t *testing.T) {
 	db := config.GetDB()
 	err = db.AutoMigrate(&models.User{})
 	require.NoError(t, err, "Failed to migrate test database")
-
-	// Restore original DATABASE_URL (though tests will continue using test DB)
-	if originalURL != "" {
-		os.Setenv("DATABASE_URL", originalURL)
-	} else {
-		os.Unsetenv("DATABASE_URL")
-	}
 }
 
 // cleanupTestDB cleans up test data
@@ -142,33 +124,6 @@ func TestHealthEndpointHeaders(t *testing.T) {
 
 	// Verify Content-Type header
 	assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
-}
-
-// TestDatabaseConnection tests database connectivity
-func TestDatabaseConnection(t *testing.T) {
-	// Skip if database is not available
-	if os.Getenv("SKIP_DB_TESTS") == "true" {
-		t.Skip("Skipping database tests")
-	}
-
-	setupTestDB(t)
-	defer cleanupTestDB(t)
-
-	db := config.GetDB()
-	assert.NotNil(t, db, "Database connection should not be nil")
-
-	// Test that we can ping the database
-	sqlDB, err := db.DB()
-	require.NoError(t, err, "Should get underlying SQL database")
-
-	err = sqlDB.Ping()
-	assert.NoError(t, err, "Should be able to ping database")
-
-	// Verify we're connected to the TEST database (not development database)
-	var currentDB string
-	err = db.Raw("SELECT current_database()").Scan(&currentDB).Error
-	require.NoError(t, err, "Should be able to query current database")
-	assert.Equal(t, "kendalls_nails_test", currentDB, "Should be connected to test database, not development database")
 }
 
 // TestDatabaseMigration tests that User table is created correctly

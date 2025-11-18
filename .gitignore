@@ -60,8 +60,7 @@ tmp/
 # Compiled binary
 kendalls-nails-api
 
-# Heroku
-.env.production
+# Heroku (config vars set directly in Heroku dashboard)
 
 # AWS credentials (should never be committed)
 .aws/
