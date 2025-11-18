@@ -34,7 +34,7 @@ func setupTestDB(t *testing.T) {
 	testDatabaseURL := os.Getenv("TEST_DATABASE_URL")
 	if testDatabaseURL == "" {
 		// Default to test database on same PostgreSQL server
-		testDatabaseURL = "postgresql://postgres:postgres@localhost:5432/kendalls_nails_test?sslmode=disable"
+		testDatabaseURL = "postgresql://postgres:postgres@postgres:5432/kendalls_nails_test?sslmode=disable"
 	}
 
 	// Save original DATABASE_URL and temporarily override with test database
