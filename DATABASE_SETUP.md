@@ -247,11 +247,14 @@ If you need a clean test database:
 
 ### Test Database Configuration
 
-Tests use `kendalls_nails_test` database by default. You can override this with the `TEST_DATABASE_URL` environment variable:
+Tests use `kendalls_nails_test` database by default when `GO_ENV=test` is set. The database URL is loaded from the `.env.test` file. You can customize this by editing `.env.test`:
 
 ```bash
-export TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/my_custom_test_db?sslmode=disable"
-go test ./...
+# Edit .env.test to use a custom test database
+echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/my_custom_test_db?sslmode=disable" > .env.test
+
+# Run tests
+GO_ENV=test go test ./...
 ```
 
 ### Database Isolation
