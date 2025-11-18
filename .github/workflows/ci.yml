@@ -11,6 +11,17 @@ jobs:
     name: Build and Test
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -26,6 +37,10 @@ jobs:
 
     - name: Build
       run: go build -v ./...
+
+    - name: Setup test database
+      run: |
+        ./scripts/setup-test-db.sh
 
     - name: Run unit tests
       run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
