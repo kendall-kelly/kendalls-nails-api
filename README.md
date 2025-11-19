@@ -28,14 +28,55 @@ The requirements are organized into 14 focused sections covering both functional
 
 ## Getting Started
 
-### For New Developers
+### Install Go
 
-**First time?** Read these in order:
-1. [User Roles](./requirements/01-user-roles.md) - Who uses the system
-2. [Order Management](./requirements/02-order-management.md) - Core workflow
-3. [Backend Framework](./requirements/09-backend-framework.md) - Tech stack
-4. [API Endpoints](./requirements/07-api-endpoints.md) - What to implement
+Follow the [instructions](https://go.dev/doc/install) to install Go.
 
-## Project Status
+### Start backing services
 
-This project is currently in the requirements and planning phase.
+This step starts up the required backing services for the application, such as the Postgres database:
+
+   ```bash
+   docker-compose up -d
+   ```
+
+### Copy default environment variables
+
+This creates a local set of environment variables that you can customize for your machine. The defaults are probably fine for now:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+### Build the application
+
+Compile the application:
+
+   ```bash
+   go build
+   ```
+
+### Run the application
+
+Run the application:
+
+   ```bash
+   go run main.go
+   ```
+
+### Verify the application started successfully
+
+Send a request to the `/health` endpoint to verify that the application is running:
+
+   ```bash
+   curl localhost:8080/api/v1/health
+   ```
+
+The expected response is:
+
+   ```bash
+   {
+     "message": "Custom Nails API is running",
+     "success": true
+   }
+   ```
