@@ -129,23 +129,6 @@ kendalls-nails-api/
 └── requirements/           # Requirements documentation (already exists)
 ```
 
-## Environment Variables
-
-Required for local development (add to `.env`):
-
-```
-DATABASE_URL=postgresql://user:password@localhost:5432/kendalls_nails
-PORT=8080
-AUTH0_DOMAIN=your-tenant.auth0.com
-AUTH0_AUDIENCE=your-api-identifier
-JWT_SECRET=your-secret-key
-AWS_REGION=us-east-1
-AWS_S3_BUCKET=kendalls-nails-uploads
-AWS_ACCESS_KEY_ID=your-key
-AWS_SECRET_ACCESS_KEY=your-secret
-LOG_LEVEL=debug
-```
-
 ## Key Design Decisions
 
 1. **Go over Node.js**: Better performance, type safety, simpler concurrency

@@ -48,6 +48,22 @@ This creates a local set of environment variables that you can customize for you
    cp .env.example .env
    ```
 
+### Setup Auth0 and configure environment variables
+
+1. **Auth0 Account Setup**
+   - Create a free Auth0 account at https://auth0.com
+   - Create a new API in the Auth0 Dashboard
+   - Note your Auth0 Domain and API Identifier (Audience)
+
+2. **Environment Configuration**
+   - Update `.env` with your Auth0 credentials:
+     ```
+     AUTH0_DOMAIN=your-tenant.auth0.com
+     AUTH0_AUDIENCE=your-api-identifier
+     ```
+
+Ensure your Auth0 settings are correct by following the [Testing Auth0](docs/TESTING_AUTH0.md) steps.
+
 ### Build the application
 
 Compile the application:
