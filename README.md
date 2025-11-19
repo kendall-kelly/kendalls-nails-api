@@ -32,6 +32,10 @@ The requirements are organized into 14 focused sections covering both functional
 
 Follow the [instructions](https://go.dev/doc/install) to install Go.
 
+### Open Docker Desktop
+
+Open Docker Desktop. If you don't have it installed, follow the [instructions](https://docs.docker.com/desktop/) to install it.
+
 ### Start backing services
 
 This step starts up the required backing services for the application, such as the Postgres database:
