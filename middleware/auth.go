@@ -68,7 +68,9 @@ func EnsureValidToken(cfg *config.Config) gin.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"success":false,"error":{"code":"INVALID_TOKEN","message":"Failed to validate JWT."}}`))
+		if _, writeErr := w.Write([]byte(`{"success":false,"error":{"code":"INVALID_TOKEN","message":"Failed to validate JWT."}}`)); writeErr != nil {
+			log.Printf("Failed to write error response: %v", writeErr)
+		}
 	}
 
 	middleware := jwtmiddleware.New(
