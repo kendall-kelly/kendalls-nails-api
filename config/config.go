@@ -51,7 +51,6 @@ func Load() (*Config, error) {
 		GoEnv:              getEnv("GO_ENV", "development"),
 		Auth0Domain:        getEnv("AUTH0_DOMAIN", ""),
 		Auth0Audience:      getEnv("AUTH0_AUDIENCE", ""),
-		JWTSecret:          getEnv("JWT_SECRET", ""),
 		AWSRegion:          getEnv("AWS_REGION", "us-east-1"),
 		AWSS3Bucket:        getEnv("AWS_S3_BUCKET", ""),
 		AWSAccessKeyID:     getEnv("AWS_ACCESS_KEY_ID", ""),

@@ -6,12 +6,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/kendall-kelly/kendalls-nails-api/config"
+	"github.com/kendall-kelly/kendalls-nails-api/middleware"
 	"github.com/kendall-kelly/kendalls-nails-api/models"
 )
 
 func main() {
 	// Basic logging
 	log.Println("Starting Custom Nails API server...")
+
+	// Load configuration first
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
 
 	// Connect to database
 	if err := config.ConnectDatabase(); err != nil {
@@ -36,12 +43,9 @@ func main() {
 
 		// Database status endpoint
 		v1.GET("/database/status", databaseStatus)
-	}
 
-	// Load configuration for port
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		// Protected endpoint - requires valid JWT token
+		v1.GET("/protected", middleware.EnsureValidToken(cfg), protectedEndpoint)
 	}
 
 	// Start server
@@ -106,5 +110,45 @@ func databaseStatus(c *gin.Context) {
 		"success": true,
 		"message": "Database connected",
 		"tables":  tables,
+	})
+}
+
+// protectedEndpoint is an endpoint that requires valid JWT authentication
+func protectedEndpoint(c *gin.Context) {
+	// Extract user ID from the authenticated token
+	userID, err := middleware.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "UNAUTHORIZED",
+				"message": "Could not extract user information",
+			},
+		})
+		return
+	}
+
+	// Get the validated claims
+	claims, err := middleware.GetClaims(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "UNAUTHORIZED",
+				"message": "Could not retrieve claims",
+			},
+		})
+		return
+	}
+
+	// Return success with user information
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "You have accessed a protected endpoint",
+		"data": gin.H{
+			"user_id": userID,
+			"issuer":  claims.RegisteredClaims.Issuer,
+			"subject": claims.RegisteredClaims.Subject,
+		},
 	})
 }
