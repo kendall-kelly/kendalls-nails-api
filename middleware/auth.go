@@ -93,6 +93,12 @@ func EnsureValidToken(cfg *config.Config) gin.HandlerFunc {
 
 		// Use the JWT middleware to check the token
 		middleware.CheckJWT(handler).ServeHTTP(c.Writer, c.Request)
+
+		// If the response was already written (e.g., by errorHandler), abort the Gin context
+		// to prevent Gin from writing additional responses
+		if c.Writer.Written() {
+			c.Abort()
+		}
 	}
 }
 

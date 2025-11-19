@@ -62,8 +62,8 @@ This creates a local set of environment variables that you can customize for you
 2. **Environment Configuration**
    - Update `.env` with your Auth0 credentials:
      ```
-     AUTH0_DOMAIN=your-tenant.auth0.com
-     AUTH0_AUDIENCE=your-api-identifier
+     AUTH0_DOMAIN=https://[YOUR TENANT].us.auth0.com
+     AUTH0_AUDIENCE=your-api-audience
      ```
 
 Ensure your Auth0 settings are correct by following the [Testing Auth0](docs/TESTING_AUTH0.md) steps.
