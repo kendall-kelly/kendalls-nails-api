@@ -3,9 +3,12 @@ package main
 import (
 	"log"
 	"net/http"
+	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/kendall-kelly/kendalls-nails-api/config"
+	"github.com/kendall-kelly/kendalls-nails-api/controllers"
 	"github.com/kendall-kelly/kendalls-nails-api/middleware"
 	"github.com/kendall-kelly/kendalls-nails-api/models"
 )
@@ -35,6 +38,18 @@ func main() {
 	// Initialize Gin router
 	router := gin.Default()
 
+	// Configure CORS middleware
+	// Allows Single Page Apps to make API calls from different origins
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     cfg.GetCORSOrigins(),
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+	log.Printf("CORS configured for origins: %v", cfg.GetCORSOrigins())
+
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
@@ -46,6 +61,11 @@ func main() {
 
 		// Protected endpoint - requires valid JWT token
 		v1.GET("/protected", middleware.EnsureValidToken(cfg), protectedEndpoint)
+
+		// User management routes
+		v1.POST("/users", middleware.EnsureValidToken(cfg), controllers.CreateUser)
+		v1.GET("/users/me", middleware.EnsureValidToken(cfg), controllers.GetMyProfile)
+		v1.PUT("/users/me", middleware.EnsureValidToken(cfg), controllers.UpdateMyProfile)
 	}
 
 	// Start server

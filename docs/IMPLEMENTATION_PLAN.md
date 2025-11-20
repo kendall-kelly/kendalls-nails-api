@@ -151,9 +151,10 @@ Response: {"success": true, "user_id": "auth0|123...", "role": "customer"}
 
 Goal: Implement the essential order submission and review workflow.
 
-### Iteration 5: User Management & Profile
+### Iteration 5: User Management & Profile ✅
 **Duration**: 2-3 hours
 **Complexity**: Beginner-Intermediate
+**Status**: COMPLETED
 
 **What you'll build:**
 - Enhance `User` model with full fields (Name, Email, Role, Auth0ID)

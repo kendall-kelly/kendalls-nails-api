@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -21,7 +22,10 @@ type Config struct {
 	AWSAccessKeyID     string
 	AWSSecretAccessKey string
 	LogLevel           string
+	CORSAllowedOrigins string
 }
+
+var appConfig *Config
 
 // Load loads the configuration from environment variables
 // It automatically determines which .env file to load based on GO_ENV
@@ -56,6 +60,7 @@ func Load() (*Config, error) {
 		AWSAccessKeyID:     getEnv("AWS_ACCESS_KEY_ID", ""),
 		AWSSecretAccessKey: getEnv("AWS_SECRET_ACCESS_KEY", ""),
 		LogLevel:           getEnv("LOG_LEVEL", "info"),
+		CORSAllowedOrigins: getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173"),
 	}
 
 	// Validate required configuration
@@ -63,7 +68,20 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// Store config globally for access across the application
+	appConfig = config
+
 	return config, nil
+}
+
+// GetConfig returns the loaded configuration instance
+func GetConfig() *Config {
+	return appConfig
+}
+
+// SetConfig sets the configuration instance (primarily for testing)
+func SetConfig(cfg *Config) {
+	appConfig = cfg
 }
 
 // Validate checks that all required configuration values are set
@@ -100,4 +118,17 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// GetCORSOrigins returns the CORS allowed origins as a slice
+func (c *Config) GetCORSOrigins() []string {
+	if c.CORSAllowedOrigins == "" {
+		return []string{"http://localhost:3000", "http://localhost:5173"}
+	}
+	origins := strings.Split(c.CORSAllowedOrigins, ",")
+	// Trim whitespace from each origin
+	for i, origin := range origins {
+		origins[i] = strings.TrimSpace(origin)
+	}
+	return origins
 }
