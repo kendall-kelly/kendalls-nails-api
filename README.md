@@ -73,7 +73,7 @@ Ensure your Auth0 settings are correct by following the [Testing Auth0](docs/TES
 Compile the application:
 
    ```bash
-   go build
+   make build
    ```
 
 ### Run the application
@@ -81,7 +81,7 @@ Compile the application:
 Run the application:
 
    ```bash
-   go run main.go
+   make run
    ```
 
 ### Verify the application started successfully
