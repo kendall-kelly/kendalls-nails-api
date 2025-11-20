@@ -155,6 +155,8 @@ func TestDatabaseMigration(t *testing.T) {
 
 	expectedColumns := map[string]string{
 		"id":         "bigint",
+		"auth0_id":   "text",
+		"name":       "text",
 		"email":      "text",
 		"role":       "text",
 		"created_at": "timestamp with time zone",

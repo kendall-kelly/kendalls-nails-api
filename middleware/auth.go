@@ -18,6 +18,7 @@ import (
 // CustomClaims contains custom data we want from the token.
 type CustomClaims struct {
 	Scope string `json:"scope"`
+	Role  string `json:"kendalls_nails_role"`
 }
 
 // Validate does nothing for this example, but we need
@@ -79,6 +80,13 @@ func EnsureValidToken(cfg *config.Config) gin.HandlerFunc {
 	)
 
 	return func(c *gin.Context) {
+		// Extract the access token before validation for later use
+		authHeader := c.GetHeader("Authorization")
+		if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+			accessToken := strings.TrimPrefix(authHeader, "Bearer ")
+			c.Set("access_token", accessToken)
+		}
+
 		var handler http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
 			// Store the validated claims in Gin context
 			token := r.Context().Value(jwtmiddleware.ContextKey{}).(*validator.ValidatedClaims)
@@ -115,6 +123,21 @@ func GetUserID(c *gin.Context) (string, error) {
 	}
 
 	return userIDStr, nil
+}
+
+// GetAccessToken extracts the raw access token from the Gin context
+func GetAccessToken(c *gin.Context) (string, error) {
+	token, exists := c.Get("access_token")
+	if !exists {
+		return "", &AuthError{Code: "MISSING_TOKEN", Message: "Access token not found in context"}
+	}
+
+	tokenStr, ok := token.(string)
+	if !ok {
+		return "", &AuthError{Code: "INVALID_TOKEN", Message: "Access token is not a string"}
+	}
+
+	return tokenStr, nil
 }
 
 // GetClaims extracts the validated JWT claims from the Gin context
@@ -173,4 +196,19 @@ type AuthError struct {
 
 func (e *AuthError) Error() string {
 	return e.Message
+}
+
+// GetCustomClaims is a helper to get CustomClaims directly (useful for testing)
+func GetCustomClaims(c *gin.Context) (*CustomClaims, error) {
+	claims, err := GetClaims(c)
+	if err != nil {
+		return nil, err
+	}
+
+	customClaims, ok := claims.CustomClaims.(*CustomClaims)
+	if !ok {
+		return nil, &AuthError{Code: "INVALID_CLAIMS", Message: "Custom claims are not in the expected format"}
+	}
+
+	return customClaims, nil
 }
