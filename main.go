@@ -69,6 +69,8 @@ func main() {
 
 		// Order management routes
 		v1.POST("/orders", middleware.EnsureValidToken(cfg), controllers.CreateOrder)
+		v1.GET("/orders", middleware.EnsureValidToken(cfg), controllers.ListOrders)
+		v1.GET("/orders/:id", middleware.EnsureValidToken(cfg), controllers.GetOrder)
 	}
 
 	// Start server

@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kendall-kelly/kendalls-nails-api/config"
@@ -102,6 +103,187 @@ func CreateOrder(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"data":    order,
+	})
+}
+
+// ListOrders handles GET /api/v1/orders - lists orders with role-based filtering
+// Customers see only their orders
+// Technicians see orders assigned to them + unassigned orders
+func ListOrders(c *gin.Context) {
+	// Extract Auth0 user ID from JWT token
+	auth0ID, err := middleware.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "UNAUTHORIZED",
+				"message": "Could not extract user information",
+			},
+		})
+		return
+	}
+
+	// Find the user in the database
+	db := config.GetDB()
+	var user models.User
+	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "USER_NOT_FOUND",
+				"message": "User profile not found. Please create a profile first.",
+			},
+		})
+		return
+	}
+
+	// Parse pagination parameters
+	page := 1
+	limit := 10
+	if pageStr := c.Query("page"); pageStr != "" {
+		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
+			limit = l
+		}
+	}
+	offset := (page - 1) * limit
+
+	// Build query based on user role
+	query := db.Model(&models.Order{})
+
+	if user.Role == "customer" {
+		// Customers see only their own orders
+		query = query.Where("customer_id = ?", user.ID)
+	} else if user.Role == "technician" {
+		// Technicians see orders assigned to them + unassigned orders
+		query = query.Where("technician_id = ? OR technician_id IS NULL", user.ID)
+	}
+
+	// Get total count for pagination info
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DATABASE_ERROR",
+				"message": "Failed to count orders",
+			},
+		})
+		return
+	}
+
+	// Fetch orders with pagination
+	var orders []models.Order
+	if err := query.Preload("Customer").Preload("Technician").
+		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&orders).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DATABASE_ERROR",
+				"message": "Failed to fetch orders",
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    orders,
+		"pagination": gin.H{
+			"page":       page,
+			"limit":      limit,
+			"total":      total,
+			"totalPages": (total + int64(limit) - 1) / int64(limit),
+		},
+	})
+}
+
+// GetOrder handles GET /api/v1/orders/:id - gets a single order with authorization
+func GetOrder(c *gin.Context) {
+	// Extract Auth0 user ID from JWT token
+	auth0ID, err := middleware.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "UNAUTHORIZED",
+				"message": "Could not extract user information",
+			},
+		})
+		return
+	}
+
+	// Find the user in the database
+	db := config.GetDB()
+	var user models.User
+	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "USER_NOT_FOUND",
+				"message": "User profile not found. Please create a profile first.",
+			},
+		})
+		return
+	}
+
+	// Get order ID from URL parameter
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "Order ID is required",
+			},
+		})
+		return
+	}
+
+	// Fetch the order
+	var order models.Order
+	if err := db.Preload("Customer").Preload("Technician").First(&order, orderID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "ORDER_NOT_FOUND",
+				"message": "Order not found",
+			},
+		})
+		return
+	}
+
+	// Authorization check: Can user access this order?
+	canAccess := false
+	if user.Role == "customer" {
+		// Customers can only access their own orders
+		canAccess = order.CustomerID == user.ID
+	} else if user.Role == "technician" {
+		// Technicians can access orders assigned to them or unassigned orders
+		canAccess = order.TechnicianID == nil || (order.TechnicianID != nil && *order.TechnicianID == user.ID)
+	}
+
+	if !canAccess {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "FORBIDDEN",
+				"message": "You do not have permission to access this order",
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    order,
 	})
