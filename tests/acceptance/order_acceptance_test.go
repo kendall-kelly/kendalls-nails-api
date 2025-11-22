@@ -90,6 +90,7 @@ func (suite *OrderAcceptanceTestSuite) createRouter() *gin.Engine {
 		// Routes for technician scenarios
 		v1.GET("/orders-tech", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.ListOrders)
 		v1.GET("/orders-tech/:id", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.GetOrder)
+		v1.PUT("/orders-tech/:id/assign", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.AssignOrder)
 		v1.PUT("/orders-tech/:id/review", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.ReviewOrder)
 	}
 
@@ -720,6 +721,82 @@ func (suite *OrderAcceptanceTestSuite) TestOrderReview_OrderNotFound_Acceptance(
 	errorData := respData["error"].(map[string]interface{})
 	assert.Equal(suite.T(), "ORDER_NOT_FOUND", errorData["code"])
 	assert.Equal(suite.T(), "Order not found", errorData["message"])
+}
+
+// TestOrderAssign_CompleteWorkflow_Acceptance tests the complete workflow of assigning an order
+func (suite *OrderAcceptanceTestSuite) TestOrderAssign_CompleteWorkflow_Acceptance() {
+	// Step 1: Setup - Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Step 2: Customer creates an order
+	createBody := map[string]interface{}{
+		"description": "Blue nails with stars",
+		"quantity":    3,
+	}
+
+	resp, respData := suite.makeRequest("POST", "/api/v1/orders", createBody)
+	assert.Equal(suite.T(), http.StatusCreated, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	orderData := respData["data"].(map[string]interface{})
+	orderID := int(orderData["id"].(float64))
+
+	// Verify order is initially unassigned
+	assert.Nil(suite.T(), orderData["technician_id"])
+	assert.Equal(suite.T(), "submitted", orderData["status"])
+
+	// Step 3: Technician assigns the order to themselves
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/assign", orderID), nil)
+
+	// Verify assignment was successful
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	assignedOrderData := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), float64(orderID), assignedOrderData["id"].(float64))
+	assert.Equal(suite.T(), "Blue nails with stars", assignedOrderData["description"])
+	assert.Equal(suite.T(), float64(3), assignedOrderData["quantity"])
+	assert.Equal(suite.T(), float64(technician.ID), assignedOrderData["technician_id"])
+
+	// Verify technician relationship is loaded
+	technicianData := assignedOrderData["technician"].(map[string]interface{})
+	assert.Equal(suite.T(), "Test Technician", technicianData["name"])
+	assert.Equal(suite.T(), "tech@test.com", technicianData["email"])
+	assert.Equal(suite.T(), "technician", technicianData["role"])
+
+	// Step 4: Verify the order is now in technician's list
+	resp, respData = suite.makeRequest("GET", "/api/v1/orders-tech", nil)
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	orders := respData["data"].([]interface{})
+	assert.Equal(suite.T(), 1, len(orders))
+
+	firstOrder := orders[0].(map[string]interface{})
+	assert.Equal(suite.T(), float64(orderID), firstOrder["id"].(float64))
+	assert.Equal(suite.T(), float64(technician.ID), firstOrder["technician_id"])
+
+	// Step 5: Verify the assignment persisted in the database
+	var dbOrder models.Order
+	err := suite.db.Preload("Technician").First(&dbOrder, orderID).Error
+	suite.NoError(err)
+	assert.NotNil(suite.T(), dbOrder.TechnicianID)
+	assert.Equal(suite.T(), technician.ID, *dbOrder.TechnicianID)
+	assert.Equal(suite.T(), "Test Technician", dbOrder.Technician.Name)
 }
 
 // TestOrderAcceptanceSuite runs the test suite

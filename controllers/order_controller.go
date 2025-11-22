@@ -467,3 +467,127 @@ func ReviewOrder(c *gin.Context) {
 		"data":    order,
 	})
 }
+
+// AssignOrder handles PUT /api/v1/orders/:id/assign - assigns an order to the current technician
+func AssignOrder(c *gin.Context) {
+	// Extract Auth0 user ID from JWT token
+	auth0ID, err := middleware.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "UNAUTHORIZED",
+				"message": "Could not extract user information",
+			},
+		})
+		return
+	}
+
+	// Find the user in the database
+	db := config.GetDB()
+	var user models.User
+	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "USER_NOT_FOUND",
+				"message": "User profile not found. Please create a profile first.",
+			},
+		})
+		return
+	}
+
+	// Check if user is a technician (only technicians can assign orders)
+	if user.Role != "technician" {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "FORBIDDEN",
+				"message": "Only technicians can assign orders",
+			},
+		})
+		return
+	}
+
+	// Get order ID from URL parameter
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "Order ID is required",
+			},
+		})
+		return
+	}
+
+	// Fetch the order
+	var order models.Order
+	if err := db.First(&order, orderID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "ORDER_NOT_FOUND",
+				"message": "Order not found",
+			},
+		})
+		return
+	}
+
+	// Check if order is already assigned to another technician
+	if order.TechnicianID != nil && *order.TechnicianID != user.ID {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "ALREADY_ASSIGNED",
+				"message": "Order is already assigned to another technician",
+			},
+		})
+		return
+	}
+
+	// Check if order is already assigned to this technician
+	if order.TechnicianID != nil && *order.TechnicianID == user.ID {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "ALREADY_ASSIGNED",
+				"message": "Order is already assigned to you",
+			},
+		})
+		return
+	}
+
+	// Assign the order to the current technician
+	order.TechnicianID = &user.ID
+
+	// Save the changes
+	if err := db.Save(&order).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DATABASE_ERROR",
+				"message": "Failed to assign order",
+			},
+		})
+		return
+	}
+
+	// Load relationships for complete response
+	if err := db.Preload("Customer").Preload("Technician").First(&order, order.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DATABASE_ERROR",
+				"message": "Failed to load order details",
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    order,
+	})
+}

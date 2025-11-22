@@ -767,6 +767,72 @@ func (suite *OrderIntegrationTestSuite) TestOrderReviewWorkflow_CustomerCannotRe
 	assert.Equal(suite.T(), "Only technicians can review orders", errorData["message"])
 }
 
+// TestOrderAssignWorkflow_TechnicianAssignsOrder tests the complete workflow of a technician assigning an order to themselves
+func (suite *OrderIntegrationTestSuite) TestOrderAssignWorkflow_TechnicianAssignsOrder() {
+	// Create a customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer123",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech123",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Create an unassigned order
+	order := models.Order{
+		Description: "Pink nails with glitter",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&order)
+
+	// Setup router with technician authentication
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("user_id", technician.Auth0ID)
+		c.Next()
+	})
+	router.PUT("/api/v1/orders/:id/assign", controllers.AssignOrder)
+
+	// Assign the order
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/v1/orders/%d/assign", order.ID), nil)
+	router.ServeHTTP(w, req)
+
+	// Assertions
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), response["success"].(bool))
+
+	data := response["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "Pink nails with glitter", data["description"])
+	assert.Equal(suite.T(), float64(2), data["quantity"])
+	assert.Equal(suite.T(), float64(technician.ID), data["technician_id"])
+
+	// Verify technician details are loaded
+	technicianData := data["technician"].(map[string]interface{})
+	assert.Equal(suite.T(), "Technician User", technicianData["name"])
+	assert.Equal(suite.T(), "tech@example.com", technicianData["email"])
+
+	// Verify in database
+	var updatedOrder models.Order
+	suite.db.First(&updatedOrder, order.ID)
+	assert.NotNil(suite.T(), updatedOrder.TechnicianID)
+	assert.Equal(suite.T(), technician.ID, *updatedOrder.TechnicianID)
+}
+
 // TestOrderIntegrationSuite runs the test suite
 func TestOrderIntegrationSuite(t *testing.T) {
 	suite.Run(t, new(OrderIntegrationTestSuite))
