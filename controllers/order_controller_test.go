@@ -962,3 +962,761 @@ func TestGetOrder_NotFound(t *testing.T) {
 	assert.Equal(t, "ORDER_NOT_FOUND", errorData["code"])
 	assert.Equal(t, "Order not found", errorData["message"])
 }
+
+// ITERATION 8 TESTS: ReviewOrder (Accept/Reject)
+
+func TestReviewOrder_Accept_Success(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order to accept",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request
+	price := 45.00
+	requestBody := map[string]interface{}{
+		"action": "accept",
+		"price":  price,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.True(t, response["success"].(bool))
+
+	// Check data
+	data := response["data"].(map[string]interface{})
+	assert.Equal(t, "accepted", data["status"])
+	assert.Equal(t, price, data["price"])
+	assert.Equal(t, float64(technician.ID), data["technician_id"])
+	assert.Nil(t, data["feedback"])
+
+	// Verify technician relationship is loaded
+	techData := data["technician"].(map[string]interface{})
+	assert.Equal(t, technician.Email, techData["email"])
+
+	// Verify database was updated
+	var updatedOrder models.Order
+	db.First(&updatedOrder, order.ID)
+	assert.Equal(t, "accepted", updatedOrder.Status)
+	assert.Equal(t, &price, updatedOrder.Price)
+	assert.Equal(t, &technician.ID, updatedOrder.TechnicianID)
+	assert.Nil(t, updatedOrder.Feedback)
+}
+
+func TestReviewOrder_Reject_Success(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order to reject",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request
+	feedback := "Design is too complex for current materials"
+	requestBody := map[string]interface{}{
+		"action":   "reject",
+		"feedback": feedback,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.True(t, response["success"].(bool))
+
+	// Check data
+	data := response["data"].(map[string]interface{})
+	assert.Equal(t, "rejected", data["status"])
+	assert.Equal(t, feedback, data["feedback"])
+	assert.Equal(t, float64(technician.ID), data["technician_id"])
+	assert.Nil(t, data["price"])
+
+	// Verify database was updated
+	var updatedOrder models.Order
+	db.First(&updatedOrder, order.ID)
+	assert.Equal(t, "rejected", updatedOrder.Status)
+	assert.Equal(t, &feedback, updatedOrder.Feedback)
+	assert.Equal(t, &technician.ID, updatedOrder.TechnicianID)
+	assert.Nil(t, updatedOrder.Price)
+}
+
+func TestReviewOrder_AsCustomer_Forbidden(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router with customer auth
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(customer.Auth0ID, "customer", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request
+	requestBody := map[string]interface{}{
+		"action": "accept",
+		"price":  45.00,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusForbidden, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "FORBIDDEN", errorData["code"])
+	assert.Equal(t, "Only technicians can review orders", errorData["message"])
+}
+
+func TestReviewOrder_Accept_WithoutPrice_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request without price
+	requestBody := map[string]interface{}{
+		"action": "accept",
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "VALIDATION_ERROR", errorData["code"])
+	assert.Equal(t, "Price is required when accepting an order", errorData["message"])
+}
+
+func TestReviewOrder_Accept_WithNegativePrice_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request with negative price
+	requestBody := map[string]interface{}{
+		"action": "accept",
+		"price":  -10.00,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "VALIDATION_ERROR", errorData["code"])
+	assert.Equal(t, "Price must be greater than zero", errorData["message"])
+}
+
+func TestReviewOrder_Accept_WithZeroPrice_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request with zero price
+	requestBody := map[string]interface{}{
+		"action": "accept",
+		"price":  0.00,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "VALIDATION_ERROR", errorData["code"])
+	assert.Equal(t, "Price must be greater than zero", errorData["message"])
+}
+
+func TestReviewOrder_Reject_WithoutFeedback_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request without feedback
+	requestBody := map[string]interface{}{
+		"action": "reject",
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "VALIDATION_ERROR", errorData["code"])
+	assert.Equal(t, "Feedback is required when rejecting an order", errorData["message"])
+}
+
+func TestReviewOrder_Reject_WithEmptyFeedback_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request with empty feedback
+	requestBody := map[string]interface{}{
+		"action":   "reject",
+		"feedback": "",
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "VALIDATION_ERROR", errorData["code"])
+	assert.Equal(t, "Feedback is required when rejecting an order", errorData["message"])
+}
+
+func TestReviewOrder_AlreadyReviewed_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create already accepted order
+	price := 45.00
+	order := models.Order{
+		Description:  "Already accepted order",
+		Quantity:     2,
+		Status:       "accepted",
+		CustomerID:   customer.ID,
+		TechnicianID: &technician.ID,
+		Price:        &price,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Try to review again
+	requestBody := map[string]interface{}{
+		"action": "accept",
+		"price":  50.00,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "INVALID_STATE", errorData["code"])
+	assert.Equal(t, "Order has already been reviewed", errorData["message"])
+}
+
+func TestReviewOrder_InvalidAction_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request with invalid action
+	requestBody := map[string]interface{}{
+		"action": "cancel",
+		"price":  45.00,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "VALIDATION_ERROR", errorData["code"])
+}
+
+func TestReviewOrder_OrderNotFound_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create technician
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		ReviewOrder,
+	)
+
+	// Create request for non-existent order
+	requestBody := map[string]interface{}{
+		"action": "accept",
+		"price":  45.00,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/99999/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "ORDER_NOT_FOUND", errorData["code"])
+	assert.Equal(t, "Order not found", errorData["message"])
+}
+
+func TestReviewOrder_WithoutAuth_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	// Create order
+	order := models.Order{
+		Description: "Test order",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router without auth middleware
+	router := setupTestRouter()
+	router.PUT("/orders/:id/review", ReviewOrder)
+
+	// Create request
+	requestBody := map[string]interface{}{
+		"action": "accept",
+		"price":  45.00,
+	}
+	body, _ := json.Marshal(requestBody)
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/review", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+}

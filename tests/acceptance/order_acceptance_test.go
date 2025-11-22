@@ -90,6 +90,7 @@ func (suite *OrderAcceptanceTestSuite) createRouter() *gin.Engine {
 		// Routes for technician scenarios
 		v1.GET("/orders-tech", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.ListOrders)
 		v1.GET("/orders-tech/:id", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.GetOrder)
+		v1.PUT("/orders-tech/:id/review", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.ReviewOrder)
 	}
 
 	return router
@@ -425,6 +426,300 @@ func (suite *OrderAcceptanceTestSuite) TestListOrders_Sorting_Acceptance() {
 	// Oldest order should be last
 	lastOrder := orders[2].(map[string]interface{})
 	assert.Equal(suite.T(), "First order", lastOrder["description"])
+}
+
+// ITERATION 8 ACCEPTANCE TESTS: Order Review End-to-End
+
+// TestOrderReview_CompleteAcceptWorkflow_Acceptance tests the complete accept workflow from end to end
+func (suite *OrderAcceptanceTestSuite) TestOrderReview_CompleteAcceptWorkflow_Acceptance() {
+	// Setup: Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Step 1: Customer creates an order
+	order := models.Order{
+		Description: "Order for acceptance workflow",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&order)
+
+	// Verify order is initially unassigned
+	assert.Nil(suite.T(), order.TechnicianID)
+	assert.Nil(suite.T(), order.Price)
+	assert.Equal(suite.T(), "submitted", order.Status)
+
+	// Step 2: Technician reviews and accepts the order
+	reviewBody := map[string]interface{}{
+		"action": "accept",
+		"price":  45.00,
+	}
+
+	resp, respData := suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/review", order.ID), reviewBody)
+
+	// Verify review response
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	orderData := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "accepted", orderData["status"])
+	assert.Equal(suite.T(), 45.00, orderData["price"])
+	assert.Equal(suite.T(), float64(technician.ID), orderData["technician_id"])
+	assert.Nil(suite.T(), orderData["feedback"])
+
+	// Step 3: Verify order was updated in database
+	var updatedOrder models.Order
+	suite.db.First(&updatedOrder, order.ID)
+	assert.Equal(suite.T(), "accepted", updatedOrder.Status)
+	assert.NotNil(suite.T(), updatedOrder.Price)
+	assert.Equal(suite.T(), 45.00, *updatedOrder.Price)
+	assert.Equal(suite.T(), &technician.ID, updatedOrder.TechnicianID)
+	assert.Nil(suite.T(), updatedOrder.Feedback)
+
+	// Step 4: Technician retrieves the updated order
+	resp, respData = suite.makeRequest("GET", fmt.Sprintf("/api/v1/orders-tech/%d", order.ID), nil)
+
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	retrievedOrder := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "accepted", retrievedOrder["status"])
+	assert.Equal(suite.T(), 45.00, retrievedOrder["price"])
+	assert.Equal(suite.T(), float64(technician.ID), retrievedOrder["technician_id"])
+
+	// Verify relationships are loaded
+	techData := retrievedOrder["technician"].(map[string]interface{})
+	assert.Equal(suite.T(), technician.Email, techData["email"])
+}
+
+// TestOrderReview_CompleteRejectWorkflow_Acceptance tests the complete reject workflow from end to end
+func (suite *OrderAcceptanceTestSuite) TestOrderReview_CompleteRejectWorkflow_Acceptance() {
+	// Setup: Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Step 1: Customer creates an order
+	order := models.Order{
+		Description: "Order to be rejected",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&order)
+
+	// Step 2: Technician reviews and rejects the order
+	feedback := "Design is too complex for current materials"
+	reviewBody := map[string]interface{}{
+		"action":   "reject",
+		"feedback": feedback,
+	}
+
+	resp, respData := suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/review", order.ID), reviewBody)
+
+	// Verify review response
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	orderData := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "rejected", orderData["status"])
+	assert.Equal(suite.T(), feedback, orderData["feedback"])
+	assert.Equal(suite.T(), float64(technician.ID), orderData["technician_id"])
+	assert.Nil(suite.T(), orderData["price"])
+
+	// Step 3: Verify order was updated in database
+	var updatedOrder models.Order
+	suite.db.First(&updatedOrder, order.ID)
+	assert.Equal(suite.T(), "rejected", updatedOrder.Status)
+	assert.NotNil(suite.T(), updatedOrder.Feedback)
+	assert.Equal(suite.T(), feedback, *updatedOrder.Feedback)
+	assert.Equal(suite.T(), &technician.ID, updatedOrder.TechnicianID)
+	assert.Nil(suite.T(), updatedOrder.Price)
+}
+
+// TestOrderReview_ValidationErrors_Acceptance tests validation error handling end-to-end
+func (suite *OrderAcceptanceTestSuite) TestOrderReview_ValidationErrors_Acceptance() {
+	// Setup: Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Create an order
+	order := models.Order{
+		Description: "Order for validation testing",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&order)
+
+	// Test 1: Accept without price (should fail)
+	reviewBody := map[string]interface{}{
+		"action": "accept",
+	}
+
+	resp, respData := suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/review", order.ID), reviewBody)
+
+	assert.Equal(suite.T(), http.StatusBadRequest, resp.StatusCode)
+	assert.False(suite.T(), respData["success"].(bool))
+
+	errorData := respData["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "VALIDATION_ERROR", errorData["code"])
+	assert.Equal(suite.T(), "Price is required when accepting an order", errorData["message"])
+
+	// Test 2: Reject without feedback (should fail)
+	reviewBody = map[string]interface{}{
+		"action": "reject",
+	}
+
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/review", order.ID), reviewBody)
+
+	assert.Equal(suite.T(), http.StatusBadRequest, resp.StatusCode)
+	assert.False(suite.T(), respData["success"].(bool))
+
+	errorData = respData["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "VALIDATION_ERROR", errorData["code"])
+	assert.Equal(suite.T(), "Feedback is required when rejecting an order", errorData["message"])
+
+	// Test 3: Accept with negative price (should fail)
+	reviewBody = map[string]interface{}{
+		"action": "accept",
+		"price":  -10.00,
+	}
+
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/review", order.ID), reviewBody)
+
+	assert.Equal(suite.T(), http.StatusBadRequest, resp.StatusCode)
+	assert.False(suite.T(), respData["success"].(bool))
+
+	errorData = respData["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "VALIDATION_ERROR", errorData["code"])
+	assert.Equal(suite.T(), "Price must be greater than zero", errorData["message"])
+}
+
+// TestOrderReview_AlreadyReviewed_Acceptance tests that orders can only be reviewed once
+func (suite *OrderAcceptanceTestSuite) TestOrderReview_AlreadyReviewed_Acceptance() {
+	// Setup: Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Create an order
+	order := models.Order{
+		Description: "Order to test double review",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&order)
+
+	// Step 1: Review and accept the order
+	reviewBody := map[string]interface{}{
+		"action": "accept",
+		"price":  45.00,
+	}
+
+	resp, respData := suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/review", order.ID), reviewBody)
+
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	// Step 2: Try to review again (should fail)
+	reviewBody = map[string]interface{}{
+		"action": "accept",
+		"price":  50.00,
+	}
+
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/review", order.ID), reviewBody)
+
+	assert.Equal(suite.T(), http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.False(suite.T(), respData["success"].(bool))
+
+	errorData := respData["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "INVALID_STATE", errorData["code"])
+	assert.Equal(suite.T(), "Order has already been reviewed", errorData["message"])
+
+	// Verify order is still at original price
+	var finalOrder models.Order
+	suite.db.First(&finalOrder, order.ID)
+	assert.Equal(suite.T(), 45.00, *finalOrder.Price)
+}
+
+// TestOrderReview_OrderNotFound_Acceptance tests 404 response for non-existent order
+func (suite *OrderAcceptanceTestSuite) TestOrderReview_OrderNotFound_Acceptance() {
+	// Setup: Create technician
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Try to review non-existent order
+	reviewBody := map[string]interface{}{
+		"action": "accept",
+		"price":  45.00,
+	}
+
+	resp, respData := suite.makeRequest("PUT", "/api/v1/orders-tech/99999/review", reviewBody)
+
+	assert.Equal(suite.T(), http.StatusNotFound, resp.StatusCode)
+	assert.False(suite.T(), respData["success"].(bool))
+
+	errorData := respData["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "ORDER_NOT_FOUND", errorData["code"])
+	assert.Equal(suite.T(), "Order not found", errorData["message"])
 }
 
 // TestOrderAcceptanceSuite runs the test suite

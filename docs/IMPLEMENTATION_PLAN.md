@@ -247,9 +247,10 @@ GET /api/v1/orders/:id (get single order)
 
 ---
 
-### Iteration 8: Order Review (Accept/Reject)
+### Iteration 8: Order Review (Accept/Reject) ✅
 **Duration**: 3-4 hours
 **Complexity**: Intermediate
+**Status**: COMPLETED
 
 **What you'll build:**
 - Implement "Review order" endpoint (technicians only)

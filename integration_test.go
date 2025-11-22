@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,31 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMain runs before all tests in this package
+// It ensures GO_ENV is set to "test" to prevent accidental data loss
+func TestMain(m *testing.M) {
+	env := os.Getenv("GO_ENV")
+	if env != "test" {
+		fmt.Fprintf(os.Stderr, "\n"+
+			"╔════════════════════════════════════════════════════════════════╗\n"+
+			"║                    SAFETY CHECK FAILED                         ║\n"+
+			"║                                                                ║\n"+
+			"║  Tests must run with GO_ENV=test to prevent data loss!        ║\n"+
+			"║                                                                ║\n"+
+			"║  Current GO_ENV: %-45s ║\n"+
+			"║                                                                ║\n"+
+			"║  To run tests safely:                                          ║\n"+
+			"║    make test                                                   ║\n"+
+			"║    GO_ENV=test go test ./...                                   ║\n"+
+			"╚════════════════════════════════════════════════════════════════╝\n\n",
+			fmt.Sprintf("%q", env))
+		os.Exit(1)
+	}
+
+	// Run tests
+	os.Exit(m.Run())
+}
 
 // setupRouter creates and configures the router for integration testing
 func setupRouter() *gin.Engine {
@@ -33,7 +59,7 @@ func setupTestDB(t *testing.T) {
 	// Reset DB connection to force reconnection to test database
 	config.DB = nil
 
-	// Connect to test database
+	// Connect to test database (will load .env.test due to GO_ENV=test)
 	err := config.ConnectDatabase()
 	require.NoError(t, err, "Failed to connect to test database")
 

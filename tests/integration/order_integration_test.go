@@ -463,6 +463,310 @@ func (suite *OrderIntegrationTestSuite) TestGetOrder_NotFound() {
 	assert.Equal(suite.T(), "ORDER_NOT_FOUND", errorData["code"])
 }
 
+// ITERATION 8 INTEGRATION TESTS: Order Review Workflow
+
+// TestOrderReviewWorkflow_AcceptOrder tests the complete workflow of accepting an order
+func (suite *OrderIntegrationTestSuite) TestOrderReviewWorkflow_AcceptOrder() {
+	// Create customer and technician users
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Step 1: Customer creates an order
+	order := models.Order{
+		Description: "Order to be accepted",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	err := suite.db.Create(&order).Error
+	suite.NoError(err)
+
+	// Verify order is unassigned
+	assert.Nil(suite.T(), order.TechnicianID)
+	assert.Nil(suite.T(), order.Price)
+	assert.Equal(suite.T(), "submitted", order.Status)
+
+	// Step 2: Technician accepts the order
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.PUT("/orders/:id/review", suite.mockAuthMiddleware(technician.Auth0ID, "technician"), controllers.ReviewOrder)
+		v1.GET("/orders/:id", suite.mockAuthMiddleware(technician.Auth0ID, "technician"), controllers.GetOrder)
+	}
+
+	reviewBody := map[string]interface{}{
+		"action": "accept",
+		"price":  45.00,
+	}
+	reviewBodyJSON, _ := json.Marshal(reviewBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/review", bytes.NewBuffer(reviewBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var reviewResponse map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &reviewResponse)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), reviewResponse["success"].(bool))
+
+	orderData := reviewResponse["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "accepted", orderData["status"])
+	assert.Equal(suite.T(), 45.00, orderData["price"])
+	assert.Equal(suite.T(), float64(technician.ID), orderData["technician_id"])
+	assert.Nil(suite.T(), orderData["feedback"])
+
+	// Step 3: Verify order was updated in database
+	var updatedOrder models.Order
+	suite.db.First(&updatedOrder, order.ID)
+	assert.Equal(suite.T(), "accepted", updatedOrder.Status)
+	assert.NotNil(suite.T(), updatedOrder.Price)
+	assert.Equal(suite.T(), 45.00, *updatedOrder.Price)
+	assert.Equal(suite.T(), &technician.ID, updatedOrder.TechnicianID)
+	assert.Nil(suite.T(), updatedOrder.Feedback)
+
+	// Step 4: Technician retrieves the order
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/orders/1", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var getResponse map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &getResponse)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), getResponse["success"].(bool))
+
+	retrievedOrder := getResponse["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "accepted", retrievedOrder["status"])
+	assert.Equal(suite.T(), 45.00, retrievedOrder["price"])
+}
+
+// TestOrderReviewWorkflow_RejectOrder tests the complete workflow of rejecting an order
+func (suite *OrderIntegrationTestSuite) TestOrderReviewWorkflow_RejectOrder() {
+	// Create customer and technician users
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Step 1: Customer creates an order
+	order := models.Order{
+		Description: "Order to be rejected",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	err := suite.db.Create(&order).Error
+	suite.NoError(err)
+
+	// Step 2: Technician rejects the order
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.PUT("/orders/:id/review", suite.mockAuthMiddleware(technician.Auth0ID, "technician"), controllers.ReviewOrder)
+	}
+
+	feedback := "Design is too complex for current materials"
+	reviewBody := map[string]interface{}{
+		"action":   "reject",
+		"feedback": feedback,
+	}
+	reviewBodyJSON, _ := json.Marshal(reviewBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/review", bytes.NewBuffer(reviewBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var reviewResponse map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &reviewResponse)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), reviewResponse["success"].(bool))
+
+	orderData := reviewResponse["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "rejected", orderData["status"])
+	assert.Equal(suite.T(), feedback, orderData["feedback"])
+	assert.Equal(suite.T(), float64(technician.ID), orderData["technician_id"])
+	assert.Nil(suite.T(), orderData["price"])
+
+	// Step 3: Verify order was updated in database
+	var updatedOrder models.Order
+	suite.db.First(&updatedOrder, order.ID)
+	assert.Equal(suite.T(), "rejected", updatedOrder.Status)
+	assert.NotNil(suite.T(), updatedOrder.Feedback)
+	assert.Equal(suite.T(), feedback, *updatedOrder.Feedback)
+	assert.Equal(suite.T(), &technician.ID, updatedOrder.TechnicianID)
+	assert.Nil(suite.T(), updatedOrder.Price)
+}
+
+// TestOrderReviewWorkflow_MultipleTechnicians tests that only one technician can review an order
+func (suite *OrderIntegrationTestSuite) TestOrderReviewWorkflow_MultipleTechnicians() {
+	// Create customer and two technicians
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician1 := models.User{
+		Auth0ID: "auth0|tech1",
+		Name:    "Technician One",
+		Email:   "tech1@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician1)
+
+	technician2 := models.User{
+		Auth0ID: "auth0|tech2",
+		Name:    "Technician Two",
+		Email:   "tech2@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician2)
+
+	// Create order
+	order := models.Order{
+		Description: "Order for review",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	err := suite.db.Create(&order).Error
+	suite.NoError(err)
+
+	// Step 1: Technician 1 accepts the order
+	router1 := gin.New()
+	v1 := router1.Group("/api/v1")
+	{
+		v1.PUT("/orders/:id/review", suite.mockAuthMiddleware(technician1.Auth0ID, "technician"), controllers.ReviewOrder)
+	}
+
+	reviewBody := map[string]interface{}{
+		"action": "accept",
+		"price":  50.00,
+	}
+	reviewBodyJSON, _ := json.Marshal(reviewBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/review", bytes.NewBuffer(reviewBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router1.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	// Step 2: Technician 2 tries to review the same order (should fail)
+	router2 := gin.New()
+	v2 := router2.Group("/api/v1")
+	{
+		v2.PUT("/orders/:id/review", suite.mockAuthMiddleware(technician2.Auth0ID, "technician"), controllers.ReviewOrder)
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/review", bytes.NewBuffer(reviewBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router2.ServeHTTP(w, req)
+
+	// Should get 422 because order is already reviewed
+	assert.Equal(suite.T(), http.StatusUnprocessableEntity, w.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.False(suite.T(), response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "INVALID_STATE", errorData["code"])
+	assert.Equal(suite.T(), "Order has already been reviewed", errorData["message"])
+
+	// Verify order is still assigned to technician1
+	var finalOrder models.Order
+	suite.db.First(&finalOrder, order.ID)
+	assert.Equal(suite.T(), &technician1.ID, finalOrder.TechnicianID)
+}
+
+// TestOrderReviewWorkflow_CustomerCannotReview tests that customers cannot review orders
+func (suite *OrderIntegrationTestSuite) TestOrderReviewWorkflow_CustomerCannotReview() {
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	// Create order
+	order := models.Order{
+		Description: "Order for review",
+		Quantity:    2,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	err := suite.db.Create(&order).Error
+	suite.NoError(err)
+
+	// Try to review as customer
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.PUT("/orders/:id/review", suite.mockAuthMiddleware(customer.Auth0ID, "customer"), controllers.ReviewOrder)
+	}
+
+	reviewBody := map[string]interface{}{
+		"action": "accept",
+		"price":  45.00,
+	}
+	reviewBodyJSON, _ := json.Marshal(reviewBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/review", bytes.NewBuffer(reviewBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Should be forbidden
+	assert.Equal(suite.T(), http.StatusForbidden, w.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.False(suite.T(), response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "FORBIDDEN", errorData["code"])
+	assert.Equal(suite.T(), "Only technicians can review orders", errorData["message"])
+}
+
 // TestOrderIntegrationSuite runs the test suite
 func TestOrderIntegrationSuite(t *testing.T) {
 	suite.Run(t, new(OrderIntegrationTestSuite))

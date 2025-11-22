@@ -100,3 +100,61 @@ The expected response is:
      "success": true
    }
    ```
+
+## Running Tests
+
+The project uses a dedicated test database to ensure tests don't interfere with development data.
+
+### Test Database Setup
+
+The test database (`kendalls_nails_test`) is automatically created when you first start the PostgreSQL container with `docker-compose up -d`.
+
+If the database already exists and you need to recreate it manually:
+
+```bash
+docker exec kendalls-nails-postgres psql -U postgres -c "CREATE DATABASE kendalls_nails_test;"
+```
+
+### Running Tests
+
+Run all tests:
+
+```bash
+make test
+```
+
+Run tests with coverage:
+
+```bash
+make test-coverage
+```
+
+Run specific tests:
+
+```bash
+GO_ENV=test go test -v ./controllers -run TestCreateOrder
+```
+
+**Note**: Tests automatically use the `kendalls_nails_test` database when `GO_ENV=test` is set. The Makefile test commands set this automatically.
+
+### Safety Features
+
+Tests include a built-in safety check that prevents them from running without `GO_ENV=test`. This protects against accidental data loss by ensuring tests never run against development or production databases.
+
+If you try to run tests without setting `GO_ENV=test`, you'll see an error:
+
+```
+╔════════════════════════════════════════════════════════════════╗
+║                    SAFETY CHECK FAILED                         ║
+║                                                                ║
+║  Tests must run with GO_ENV=test to prevent data loss!        ║
+║                                                                ║
+║  Current GO_ENV: ""                                            ║
+║                                                                ║
+║  To run tests safely:                                          ║
+║    make test                                                   ║
+║    GO_ENV=test go test ./...                                   ║
+╚════════════════════════════════════════════════════════════════╝
+```
+
+Always use `make test` or explicitly set `GO_ENV=test` when running tests.
