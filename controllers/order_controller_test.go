@@ -1720,3 +1720,294 @@ func TestReviewOrder_WithoutAuth_Fails(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, response["success"].(bool))
 }
+
+func TestAssignOrder_Success(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create unassigned order
+	order := models.Order{
+		Description: "Unassigned order",
+		Quantity:    1,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/assign",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		AssignOrder,
+	)
+
+	// Make request
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/assign", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.True(t, response["success"].(bool))
+
+	data := response["data"].(map[string]interface{})
+	assert.Equal(t, float64(technician.ID), data["technician_id"])
+
+	// Verify in database
+	var updatedOrder models.Order
+	db.First(&updatedOrder, order.ID)
+	assert.NotNil(t, updatedOrder.TechnicianID)
+	assert.Equal(t, technician.ID, *updatedOrder.TechnicianID)
+}
+
+func TestAssignOrder_AsCustomer_Forbidden(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	// Create unassigned order
+	order := models.Order{
+		Description: "Unassigned order",
+		Quantity:    1,
+		Status:      "submitted",
+		CustomerID:  customer.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/assign",
+		mockAuthMiddleware(customer.Auth0ID, "customer", "mock-token"),
+		AssignOrder,
+	)
+
+	// Make request
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/assign", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusForbidden, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "FORBIDDEN", errorData["code"])
+}
+
+func TestAssignOrder_AlreadyAssignedToAnother_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and two technicians
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician1 := models.User{
+		Auth0ID: "auth0|tech1",
+		Name:    "Technician 1",
+		Email:   "tech1@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician1)
+
+	technician2 := models.User{
+		Auth0ID: "auth0|tech2",
+		Name:    "Technician 2",
+		Email:   "tech2@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician2)
+
+	// Create order assigned to technician1
+	order := models.Order{
+		Description:  "Assigned order",
+		Quantity:     1,
+		Status:       "submitted",
+		CustomerID:   customer.ID,
+		TechnicianID: &technician1.ID,
+	}
+	db.Create(&order)
+
+	// Setup router with technician2 trying to assign
+	router := setupTestRouter()
+	router.PUT("/orders/:id/assign",
+		mockAuthMiddleware(technician2.Auth0ID, "technician", "mock-token"),
+		AssignOrder,
+	)
+
+	// Make request
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/assign", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "ALREADY_ASSIGNED", errorData["code"])
+	assert.Contains(t, errorData["message"], "already assigned to another technician")
+}
+
+func TestAssignOrder_AlreadyAssignedToSelf_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Customer User",
+		Email:   "customer@example.com",
+		Role:    "customer",
+	}
+	db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Create order already assigned to this technician
+	order := models.Order{
+		Description:  "Already assigned order",
+		Quantity:     1,
+		Status:       "submitted",
+		CustomerID:   customer.ID,
+		TechnicianID: &technician.ID,
+	}
+	db.Create(&order)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/assign",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		AssignOrder,
+	)
+
+	// Make request
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/assign", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "ALREADY_ASSIGNED", errorData["code"])
+	assert.Contains(t, errorData["message"], "already assigned to you")
+}
+
+func TestAssignOrder_OrderNotFound_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Create technician
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Technician User",
+		Email:   "tech@example.com",
+		Role:    "technician",
+	}
+	db.Create(&technician)
+
+	// Setup router
+	router := setupTestRouter()
+	router.PUT("/orders/:id/assign",
+		mockAuthMiddleware(technician.Auth0ID, "technician", "mock-token"),
+		AssignOrder,
+	)
+
+	// Make request for non-existent order
+	req, _ := http.NewRequest(http.MethodPut, "/orders/99999/assign", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(t, "ORDER_NOT_FOUND", errorData["code"])
+}
+
+func TestAssignOrder_WithoutAuth_Fails(t *testing.T) {
+	// Setup
+	db := setupOrderTestDB(t)
+	config.SetDB(db)
+
+	// Setup router without auth middleware
+	router := setupTestRouter()
+	router.PUT("/orders/:id/assign", AssignOrder)
+
+	// Make request without authentication
+	req, _ := http.NewRequest(http.MethodPut, "/orders/1/assign", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+	assert.False(t, response["success"].(bool))
+}

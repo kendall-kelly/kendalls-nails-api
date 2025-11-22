@@ -183,9 +183,10 @@ PUT /api/v1/users/me (update current user profile)
 
 ---
 
-### Iteration 6: Order Model & Create Order
+### Iteration 6: Order Model & Create Order ✅
 **Duration**: 2-3 hours
 **Complexity**: Intermediate
+**Status**: COMPLETED
 
 **What you'll build:**
 - Create `Order` model (without file upload yet)
@@ -215,9 +216,10 @@ Response: {"success": true, "data": {"id": 1, "status": "submitted", ...}}
 
 ---
 
-### Iteration 7: List & Get Orders (with Filtering)
+### Iteration 7: List & Get Orders (with Filtering) ✅
 **Duration**: 2-3 hours
 **Complexity**: Intermediate
+**Status**: COMPLETED
 
 **What you'll build:**
 - Implement "List orders" endpoint with role-based filtering:
@@ -286,6 +288,39 @@ Body: {
 - Conditional validation (price required for accept, feedback for reject)
 - Update operations with complex logic
 - Status workflow implementation
+
+---
+
+### Iteration 8.5: Technician Self-Assignment ✅
+**Duration**: 1-2 hours
+**Complexity**: Beginner-Intermediate
+**Status**: COMPLETED
+
+**What you'll build:**
+- Implement "Assign order to me" endpoint (technicians only)
+- Allow technicians to assign unassigned orders to themselves
+- Prevent reassigning orders that are already assigned to another technician
+- Update order to set technician_id to current user
+
+**Deliverable:**
+```bash
+PUT /api/v1/orders/:id/assign
+Response: {"success": true, "data": {"id": 1, "technician_id": 123, ...}}
+```
+
+**How to test:**
+- Create an order as customer (no technician assigned)
+- Assign it to yourself as technician
+- Verify technician_id is set in database
+- Try to assign an already-assigned order (should fail with 422)
+- Try to assign as customer (should fail with 403)
+- Try to assign as a different technician when already assigned (should fail with 422)
+
+**What a junior engineer learns:**
+- Self-assignment patterns
+- Preventing conflicts (order already taken)
+- Updating records based on current user
+- Role-based endpoint restrictions
 
 ---
 
