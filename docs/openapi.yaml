@@ -501,6 +501,173 @@ paths:
                         type: string
                         example: "Order has already been reviewed"
 
+  /orders/{id}/status:
+    put:
+      summary: Update order status
+      description: |
+        Update the status of an order through the production workflow (technicians only).
+
+        Valid status transitions:
+        - `accepted` → `in_production`
+        - `in_production` → `shipped`
+        - `shipped` → `delivered`
+
+        The order must be assigned to the requesting technician.
+      operationId: updateOrderStatus
+      tags:
+        - Orders
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order ID
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [in_production, shipped, delivered]
+                  description: The new status for the order
+                  example: "in_production"
+      responses:
+        '200':
+          description: Order status updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Order'
+              example:
+                success: true
+                data:
+                  id: 1
+                  description: "Pink nails with glitter"
+                  quantity: 2
+                  status: "in_production"
+                  price: 45.00
+                  feedback: null
+                  customer_id: 1
+                  technician_id: 2
+                  created_at: "2025-01-15T10:30:00Z"
+                  updated_at: "2025-01-15T11:00:00Z"
+                  customer:
+                    id: 1
+                    name: "Jane Customer"
+                    email: "jane@example.com"
+                    role: "customer"
+                  technician:
+                    id: 2
+                    name: "Tech Smith"
+                    email: "tech@example.com"
+                    role: "technician"
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Only technicians can update order status, or order is not assigned to requesting technician
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum: [FORBIDDEN]
+                        example: "FORBIDDEN"
+                      message:
+                        type: string
+                        example: "Only technicians can update order status"
+              examples:
+                notTechnician:
+                  value:
+                    success: false
+                    error:
+                      code: "FORBIDDEN"
+                      message: "Only technicians can update order status"
+                notAssigned:
+                  value:
+                    success: false
+                    error:
+                      code: "FORBIDDEN"
+                      message: "You can only update status of orders assigned to you"
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '422':
+          description: Invalid status transition
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum: [INVALID_STATE, INVALID_TRANSITION]
+                        example: "INVALID_TRANSITION"
+                      message:
+                        type: string
+                        example: "Invalid status transition"
+                      details:
+                        type: object
+                        properties:
+                          current_status:
+                            type: string
+                            example: "accepted"
+                          requested_status:
+                            type: string
+                            example: "shipped"
+                          allowed_statuses:
+                            type: array
+                            items:
+                              type: string
+                            example: ["in_production"]
+              examples:
+                invalidTransition:
+                  summary: Trying to skip a status (e.g., accepted → shipped)
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_TRANSITION"
+                      message: "Invalid status transition"
+                      details:
+                        current_status: "accepted"
+                        requested_status: "shipped"
+                        allowed_statuses: ["in_production"]
+                invalidState:
+                  summary: Trying to update from an invalid state (e.g., submitted)
+                  value:
+                    success: false
+                    error:
+                      code: "INVALID_STATE"
+                      message: "Cannot update status from current order state"
+
 components:
   securitySchemes:
     BearerAuth:
