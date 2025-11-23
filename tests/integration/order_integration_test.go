@@ -833,6 +833,296 @@ func (suite *OrderIntegrationTestSuite) TestOrderAssignWorkflow_TechnicianAssign
 	assert.Equal(suite.T(), technician.ID, *updatedOrder.TechnicianID)
 }
 
+// TestOrderStatusUpdateWorkflow_CompleteHappyPath tests the complete workflow of updating order status through all stages
+func (suite *OrderIntegrationTestSuite) TestOrderStatusUpdateWorkflow_CompleteHappyPath() {
+	// Create customer and technician users
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Step 1: Create an accepted order with price and assigned technician
+	price := 45.00
+	order := models.Order{
+		Description:  "Complete status workflow order",
+		Quantity:     2,
+		Status:       "accepted",
+		Price:        &price,
+		CustomerID:   customer.ID,
+		TechnicianID: &technician.ID,
+	}
+	err := suite.db.Create(&order).Error
+	suite.NoError(err)
+
+	// Setup router with technician authentication
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.PUT("/orders/:id/status", suite.mockAuthMiddleware(technician.Auth0ID, "technician"), controllers.UpdateOrderStatus)
+		v1.GET("/orders/:id", suite.mockAuthMiddleware(technician.Auth0ID, "technician"), controllers.GetOrder)
+	}
+
+	// Step 2: Update status from accepted to in_production
+	updateBody := map[string]interface{}{
+		"status": "in_production",
+	}
+	updateBodyJSON, _ := json.Marshal(updateBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/status", bytes.NewBuffer(updateBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var response1 map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response1)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), response1["success"].(bool))
+
+	orderData := response1["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "in_production", orderData["status"])
+	assert.Equal(suite.T(), 45.00, orderData["price"])
+	assert.Equal(suite.T(), float64(technician.ID), orderData["technician_id"])
+
+	// Verify in database
+	var updatedOrder1 models.Order
+	suite.db.First(&updatedOrder1, order.ID)
+	assert.Equal(suite.T(), "in_production", updatedOrder1.Status)
+
+	// Step 3: Update status from in_production to shipped
+	updateBody = map[string]interface{}{
+		"status": "shipped",
+	}
+	updateBodyJSON, _ = json.Marshal(updateBody)
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/status", bytes.NewBuffer(updateBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var response2 map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response2)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), response2["success"].(bool))
+
+	orderData = response2["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "shipped", orderData["status"])
+
+	// Verify in database
+	var updatedOrder2 models.Order
+	suite.db.First(&updatedOrder2, order.ID)
+	assert.Equal(suite.T(), "shipped", updatedOrder2.Status)
+
+	// Step 4: Update status from shipped to delivered (terminal state)
+	updateBody = map[string]interface{}{
+		"status": "delivered",
+	}
+	updateBodyJSON, _ = json.Marshal(updateBody)
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/status", bytes.NewBuffer(updateBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var response3 map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response3)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), response3["success"].(bool))
+
+	orderData = response3["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "delivered", orderData["status"])
+
+	// Verify in database - order is now in terminal state
+	var finalOrder models.Order
+	suite.db.First(&finalOrder, order.ID)
+	assert.Equal(suite.T(), "delivered", finalOrder.Status)
+	assert.Equal(suite.T(), price, *finalOrder.Price)
+	assert.Equal(suite.T(), technician.ID, *finalOrder.TechnicianID)
+
+	// Step 5: Verify technician can retrieve the completed order
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/orders/1", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(suite.T(), http.StatusOK, w.Code)
+
+	var getResponse map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &getResponse)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), getResponse["success"].(bool))
+
+	retrievedOrder := getResponse["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "delivered", retrievedOrder["status"])
+
+	// Verify relationships are loaded
+	customerData := retrievedOrder["customer"].(map[string]interface{})
+	assert.Equal(suite.T(), "Test Customer", customerData["name"])
+
+	techData := retrievedOrder["technician"].(map[string]interface{})
+	assert.Equal(suite.T(), "Test Technician", techData["name"])
+}
+
+// TestOrderStatusUpdateWorkflow_InvalidTransition tests that invalid status transitions are rejected
+func (suite *OrderIntegrationTestSuite) TestOrderStatusUpdateWorkflow_InvalidTransition() {
+	// Create customer and technician users
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Create an accepted order
+	price := 45.00
+	order := models.Order{
+		Description:  "Order for invalid transition test",
+		Quantity:     2,
+		Status:       "accepted",
+		Price:        &price,
+		CustomerID:   customer.ID,
+		TechnicianID: &technician.ID,
+	}
+	err := suite.db.Create(&order).Error
+	suite.NoError(err)
+
+	// Setup router
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.PUT("/orders/:id/status", suite.mockAuthMiddleware(technician.Auth0ID, "technician"), controllers.UpdateOrderStatus)
+	}
+
+	// Try to skip from accepted to shipped (should fail)
+	updateBody := map[string]interface{}{
+		"status": "shipped",
+	}
+	updateBodyJSON, _ := json.Marshal(updateBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/status", bytes.NewBuffer(updateBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Should get 422 Unprocessable Entity
+	assert.Equal(suite.T(), http.StatusUnprocessableEntity, w.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.False(suite.T(), response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "INVALID_TRANSITION", errorData["code"])
+	assert.Equal(suite.T(), "Invalid status transition", errorData["message"])
+
+	// Verify error details include helpful information
+	details := errorData["details"].(map[string]interface{})
+	assert.Equal(suite.T(), "accepted", details["current_status"])
+	assert.Equal(suite.T(), "shipped", details["requested_status"])
+
+	allowedStatuses := details["allowed_statuses"].([]interface{})
+	assert.Equal(suite.T(), 1, len(allowedStatuses))
+	assert.Equal(suite.T(), "in_production", allowedStatuses[0])
+
+	// Verify database was NOT updated
+	var unchangedOrder models.Order
+	suite.db.First(&unchangedOrder, order.ID)
+	assert.Equal(suite.T(), "accepted", unchangedOrder.Status)
+}
+
+// TestOrderStatusUpdateWorkflow_CustomerCannotUpdate tests that customers cannot update order status
+func (suite *OrderIntegrationTestSuite) TestOrderStatusUpdateWorkflow_CustomerCannotUpdate() {
+	// Create customer and technician users
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Create an accepted order
+	price := 45.00
+	order := models.Order{
+		Description:  "Order for customer authorization test",
+		Quantity:     2,
+		Status:       "accepted",
+		Price:        &price,
+		CustomerID:   customer.ID,
+		TechnicianID: &technician.ID,
+	}
+	err := suite.db.Create(&order).Error
+	suite.NoError(err)
+
+	// Setup router with customer authentication
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.PUT("/orders/:id/status", suite.mockAuthMiddleware(customer.Auth0ID, "customer"), controllers.UpdateOrderStatus)
+	}
+
+	// Try to update status as customer (should fail)
+	updateBody := map[string]interface{}{
+		"status": "in_production",
+	}
+	updateBodyJSON, _ := json.Marshal(updateBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orders/1/status", bytes.NewBuffer(updateBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Should be forbidden
+	assert.Equal(suite.T(), http.StatusForbidden, w.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.False(suite.T(), response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "FORBIDDEN", errorData["code"])
+	assert.Equal(suite.T(), "Only technicians can update order status", errorData["message"])
+
+	// Verify database was NOT updated
+	var unchangedOrder models.Order
+	suite.db.First(&unchangedOrder, order.ID)
+	assert.Equal(suite.T(), "accepted", unchangedOrder.Status)
+}
+
 // TestOrderIntegrationSuite runs the test suite
 func TestOrderIntegrationSuite(t *testing.T) {
 	suite.Run(t, new(OrderIntegrationTestSuite))

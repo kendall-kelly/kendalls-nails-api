@@ -468,6 +468,183 @@ func ReviewOrder(c *gin.Context) {
 	})
 }
 
+// UpdateOrderStatusRequest represents the request body for updating order status
+type UpdateOrderStatusRequest struct {
+	Status string `json:"status" binding:"required,oneof=in_production shipped delivered"`
+}
+
+// UpdateOrderStatus handles PUT /api/v1/orders/:id/status - updates order status (technicians only)
+func UpdateOrderStatus(c *gin.Context) {
+	// Extract Auth0 user ID from JWT token
+	auth0ID, err := middleware.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "UNAUTHORIZED",
+				"message": "Could not extract user information",
+			},
+		})
+		return
+	}
+
+	// Find the user in the database
+	db := config.GetDB()
+	var user models.User
+	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "USER_NOT_FOUND",
+				"message": "User profile not found. Please create a profile first.",
+			},
+		})
+		return
+	}
+
+	// Check if user is a technician (only technicians can update order status)
+	if user.Role != "technician" {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "FORBIDDEN",
+				"message": "Only technicians can update order status",
+			},
+		})
+		return
+	}
+
+	// Get order ID from URL parameter
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "Order ID is required",
+			},
+		})
+		return
+	}
+
+	// Fetch the order
+	var order models.Order
+	if err := db.First(&order, orderID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "ORDER_NOT_FOUND",
+				"message": "Order not found",
+			},
+		})
+		return
+	}
+
+	// Check if order is assigned to this technician
+	if order.TechnicianID == nil || *order.TechnicianID != user.ID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "FORBIDDEN",
+				"message": "You can only update status of orders assigned to you",
+			},
+		})
+		return
+	}
+
+	// Parse request body
+	var req UpdateOrderStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request data",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	// Define valid status transitions
+	validTransitions := map[string][]string{
+		"accepted":      {"in_production"},
+		"in_production": {"shipped"},
+		"shipped":       {"delivered"},
+		"delivered":     {}, // Terminal state
+	}
+
+	// Check if the current status allows the requested transition
+	allowedStatuses, exists := validTransitions[order.Status]
+	if !exists {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_STATE",
+				"message": "Cannot update status from current order state",
+			},
+		})
+		return
+	}
+
+	// Check if the requested status is in the list of allowed transitions
+	isValid := false
+	for _, allowed := range allowedStatuses {
+		if allowed == req.Status {
+			isValid = true
+			break
+		}
+	}
+
+	if !isValid {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_TRANSITION",
+				"message": "Invalid status transition",
+				"details": gin.H{
+					"current_status":   order.Status,
+					"requested_status": req.Status,
+					"allowed_statuses": allowedStatuses,
+				},
+			},
+		})
+		return
+	}
+
+	// Update the order status
+	order.Status = req.Status
+
+	// Save the changes
+	if err := db.Save(&order).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DATABASE_ERROR",
+				"message": "Failed to update order status",
+			},
+		})
+		return
+	}
+
+	// Load relationships for complete response
+	if err := db.Preload("Customer").Preload("Technician").First(&order, order.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DATABASE_ERROR",
+				"message": "Failed to load order details",
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    order,
+	})
+}
+
 // AssignOrder handles PUT /api/v1/orders/:id/assign - assigns an order to the current technician
 func AssignOrder(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token

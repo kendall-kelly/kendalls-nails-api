@@ -92,6 +92,7 @@ func (suite *OrderAcceptanceTestSuite) createRouter() *gin.Engine {
 		v1.GET("/orders-tech/:id", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.GetOrder)
 		v1.PUT("/orders-tech/:id/assign", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.AssignOrder)
 		v1.PUT("/orders-tech/:id/review", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.ReviewOrder)
+		v1.PUT("/orders-tech/:id/status", suite.mockAuthMiddleware("auth0|tech", "technician"), controllers.UpdateOrderStatus)
 	}
 
 	return router
@@ -797,6 +798,212 @@ func (suite *OrderAcceptanceTestSuite) TestOrderAssign_CompleteWorkflow_Acceptan
 	assert.NotNil(suite.T(), dbOrder.TechnicianID)
 	assert.Equal(suite.T(), technician.ID, *dbOrder.TechnicianID)
 	assert.Equal(suite.T(), "Test Technician", dbOrder.Technician.Name)
+}
+
+// TestOrderStatusUpdate_CompleteWorkflow_Acceptance tests the complete end-to-end workflow of updating order status
+func (suite *OrderAcceptanceTestSuite) TestOrderStatusUpdate_CompleteWorkflow_Acceptance() {
+	// Step 1: Setup - Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Step 2: Customer creates an order
+	createBody := map[string]interface{}{
+		"description": "Nail design for status workflow",
+		"quantity":    2,
+	}
+
+	resp, respData := suite.makeRequest("POST", "/api/v1/orders", createBody)
+	assert.Equal(suite.T(), http.StatusCreated, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	orderData := respData["data"].(map[string]interface{})
+	orderID := int(orderData["id"].(float64))
+	assert.Equal(suite.T(), "submitted", orderData["status"])
+
+	// Step 3: Technician assigns the order
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/assign", orderID), nil)
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	assignedOrderData := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), float64(technician.ID), assignedOrderData["technician_id"])
+
+	// Step 4: Technician reviews and accepts the order
+	reviewBody := map[string]interface{}{
+		"action": "accept",
+		"price":  50.00,
+	}
+
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/review", orderID), reviewBody)
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	acceptedOrderData := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "accepted", acceptedOrderData["status"])
+	assert.Equal(suite.T(), 50.00, acceptedOrderData["price"])
+
+	// Step 5: Technician updates status to in_production
+	statusUpdateBody := map[string]interface{}{
+		"status": "in_production",
+	}
+
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/status", orderID), statusUpdateBody)
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	inProductionOrderData := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "in_production", inProductionOrderData["status"])
+	assert.Equal(suite.T(), 50.00, inProductionOrderData["price"])
+	assert.Equal(suite.T(), float64(technician.ID), inProductionOrderData["technician_id"])
+
+	// Verify technician and customer relationships are loaded
+	techData := inProductionOrderData["technician"].(map[string]interface{})
+	assert.Equal(suite.T(), "Test Technician", techData["name"])
+	assert.Equal(suite.T(), "tech@test.com", techData["email"])
+
+	customerData := inProductionOrderData["customer"].(map[string]interface{})
+	assert.Equal(suite.T(), "Test Customer", customerData["name"])
+	assert.Equal(suite.T(), "customer@test.com", customerData["email"])
+
+	// Step 6: Technician updates status to shipped
+	statusUpdateBody = map[string]interface{}{
+		"status": "shipped",
+	}
+
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/status", orderID), statusUpdateBody)
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	shippedOrderData := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "shipped", shippedOrderData["status"])
+
+	// Step 7: Technician updates status to delivered (terminal state)
+	statusUpdateBody = map[string]interface{}{
+		"status": "delivered",
+	}
+
+	resp, respData = suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/status", orderID), statusUpdateBody)
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	deliveredOrderData := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "delivered", deliveredOrderData["status"])
+	assert.Equal(suite.T(), 50.00, deliveredOrderData["price"])
+
+	// Step 8: Verify final order state in database
+	var finalOrder models.Order
+	err := suite.db.Preload("Customer").Preload("Technician").First(&finalOrder, orderID).Error
+	suite.NoError(err)
+
+	assert.Equal(suite.T(), "delivered", finalOrder.Status)
+	assert.NotNil(suite.T(), finalOrder.Price)
+	assert.Equal(suite.T(), 50.00, *finalOrder.Price)
+	assert.NotNil(suite.T(), finalOrder.TechnicianID)
+	assert.Equal(suite.T(), technician.ID, *finalOrder.TechnicianID)
+	assert.Equal(suite.T(), customer.ID, finalOrder.CustomerID)
+
+	// Step 9: Verify customer can retrieve their completed order
+	resp, respData = suite.makeRequest("GET", fmt.Sprintf("/api/v1/orders/%d", orderID), nil)
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	customerViewOrder := respData["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "delivered", customerViewOrder["status"])
+	assert.Equal(suite.T(), "Nail design for status workflow", customerViewOrder["description"])
+
+	// Step 10: Verify order appears in technician's completed orders list
+	resp, respData = suite.makeRequest("GET", "/api/v1/orders-tech", nil)
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
+	assert.True(suite.T(), respData["success"].(bool))
+
+	orders := respData["data"].([]interface{})
+	assert.GreaterOrEqual(suite.T(), len(orders), 1)
+
+	// Find our order in the list
+	var foundOrder map[string]interface{}
+	for _, order := range orders {
+		orderMap := order.(map[string]interface{})
+		if int(orderMap["id"].(float64)) == orderID {
+			foundOrder = orderMap
+			break
+		}
+	}
+	assert.NotNil(suite.T(), foundOrder)
+	assert.Equal(suite.T(), "delivered", foundOrder["status"])
+}
+
+// TestOrderStatusUpdate_InvalidTransition_Acceptance tests that invalid transitions are rejected
+func (suite *OrderAcceptanceTestSuite) TestOrderStatusUpdate_InvalidTransition_Acceptance() {
+	// Setup: Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Create an accepted order
+	price := 45.00
+	order := models.Order{
+		Description:  "Order for invalid transition test",
+		Quantity:     2,
+		Status:       "accepted",
+		Price:        &price,
+		CustomerID:   customer.ID,
+		TechnicianID: &technician.ID,
+	}
+	suite.db.Create(&order)
+
+	// Try to skip from accepted directly to shipped (should fail)
+	statusUpdateBody := map[string]interface{}{
+		"status": "shipped",
+	}
+
+	resp, respData := suite.makeRequest("PUT", fmt.Sprintf("/api/v1/orders-tech/%d/status", order.ID), statusUpdateBody)
+
+	// Should get 422 Unprocessable Entity
+	assert.Equal(suite.T(), http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.False(suite.T(), respData["success"].(bool))
+
+	errorData := respData["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "INVALID_TRANSITION", errorData["code"])
+	assert.Equal(suite.T(), "Invalid status transition", errorData["message"])
+
+	// Verify helpful error details are provided
+	details := errorData["details"].(map[string]interface{})
+	assert.Equal(suite.T(), "accepted", details["current_status"])
+	assert.Equal(suite.T(), "shipped", details["requested_status"])
+
+	allowedStatuses := details["allowed_statuses"].([]interface{})
+	assert.Equal(suite.T(), 1, len(allowedStatuses))
+	assert.Equal(suite.T(), "in_production", allowedStatuses[0])
+
+	// Verify database was not updated
+	var unchangedOrder models.Order
+	suite.db.First(&unchangedOrder, order.ID)
+	assert.Equal(suite.T(), "accepted", unchangedOrder.Status)
 }
 
 // TestOrderAcceptanceSuite runs the test suite
