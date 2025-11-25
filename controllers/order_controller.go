@@ -8,6 +8,7 @@ import (
 	"github.com/kendall-kelly/kendalls-nails-api/config"
 	"github.com/kendall-kelly/kendalls-nails-api/middleware"
 	"github.com/kendall-kelly/kendalls-nails-api/models"
+	"github.com/kendall-kelly/kendalls-nails-api/utils"
 )
 
 // CreateOrderRequest represents the request body for creating an order
@@ -57,26 +58,121 @@ func CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Parse request body
-	var req CreateOrderRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "VALIDATION_ERROR",
-				"message": "Invalid request data",
-				"details": err.Error(),
-			},
-		})
-		return
+	// Check content type to determine if this is multipart form data or JSON
+	contentType := c.ContentType()
+	var description string
+	var quantity int
+	var imagePath *string
+
+	if contentType == "application/json" {
+		// Parse JSON request (legacy support, no file upload)
+		var req CreateOrderRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "VALIDATION_ERROR",
+					"message": "Invalid request data",
+					"details": err.Error(),
+				},
+			})
+			return
+		}
+		description = req.Description
+		quantity = req.Quantity
+	} else {
+		// Parse multipart form data (with potential file upload)
+		description = c.PostForm("description")
+		quantityStr := c.PostForm("quantity")
+
+		// Validate required fields
+		if description == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "VALIDATION_ERROR",
+					"message": "Description is required",
+				},
+			})
+			return
+		}
+
+		if quantityStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "VALIDATION_ERROR",
+					"message": "Quantity is required",
+				},
+			})
+			return
+		}
+
+		// Parse quantity
+		parsedQuantity, err := strconv.Atoi(quantityStr)
+		if err != nil || parsedQuantity <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "VALIDATION_ERROR",
+					"message": "Quantity must be a positive integer",
+				},
+			})
+			return
+		}
+		quantity = parsedQuantity
+
+		// Handle file upload if present
+		fileHeader, err := c.FormFile("image")
+		if err == nil {
+			// File was provided, validate it
+			if validateErr := utils.ValidateImageFile(fileHeader); validateErr != nil {
+				if fileErr, ok := validateErr.(*utils.FileUploadError); ok {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"success": false,
+						"error": gin.H{
+							"code":    fileErr.Code,
+							"message": fileErr.Message,
+						},
+					})
+					return
+				}
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"error": gin.H{
+						"code":    "FILE_VALIDATION_ERROR",
+						"message": validateErr.Error(),
+					},
+				})
+				return
+			}
+
+			// Save the file
+			filename, err := utils.SaveUploadedFile(fileHeader, utils.UploadDir)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"error": gin.H{
+						"code":    "FILE_SAVE_ERROR",
+						"message": "Failed to save uploaded file",
+					},
+				})
+				return
+			}
+
+			// Store the filename in imagePath
+			imagePath = &filename
+		}
+		// If err != nil, no file was provided, which is okay (image is optional)
 	}
 
 	// Create the order
 	order := models.Order{
-		Description: req.Description,
-		Quantity:    req.Quantity,
+		Description: description,
+		Quantity:    quantity,
 		Status:      "submitted",
 		CustomerID:  user.ID,
+		ImagePath:   imagePath,
 	}
 
 	if err := db.Create(&order).Error; err != nil {

@@ -358,9 +358,10 @@ Body: {"status": "in_production"}
 
 Goal: Add image upload capability for order designs.
 
-### Iteration 10: Local File Upload (No S3 Yet)
+### Iteration 10: Local File Upload (No S3 Yet) ✅
 **Duration**: 2-3 hours
 **Complexity**: Intermediate
+**Status**: COMPLETED
 
 **What you'll build:**
 - Update "Create order" endpoint to accept multipart/form-data
