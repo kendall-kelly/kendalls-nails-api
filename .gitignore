@@ -69,3 +69,6 @@ credentials
 # Testing artifacts
 testdata/
 *.test.out
+
+# Uploaded files
+uploads/

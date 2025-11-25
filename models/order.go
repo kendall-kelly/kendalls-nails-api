@@ -14,6 +14,7 @@ type Order struct {
 	Status       string         `gorm:"not null;default:'submitted'" json:"status"` // submitted, accepted, rejected, in_production, shipped, delivered
 	Price        *float64       `json:"price"`                                       // nullable, set when order is accepted
 	Feedback     *string        `json:"feedback"`                                    // nullable, set when order is rejected
+	ImagePath    *string        `json:"image_path"`                                  // nullable, path to uploaded image file
 	CustomerID   uint           `gorm:"not null;index" json:"customer_id"`           // foreign key to users table
 	Customer     User           `gorm:"foreignKey:CustomerID" json:"customer"`
 	TechnicianID *uint          `gorm:"index" json:"technician_id"` // nullable, assigned when order is reviewed
