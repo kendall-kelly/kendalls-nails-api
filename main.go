@@ -11,6 +11,7 @@ import (
 	"github.com/kendall-kelly/kendalls-nails-api/controllers"
 	"github.com/kendall-kelly/kendalls-nails-api/middleware"
 	"github.com/kendall-kelly/kendalls-nails-api/models"
+	"github.com/kendall-kelly/kendalls-nails-api/services"
 )
 
 func main() {
@@ -34,6 +35,17 @@ func main() {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 	log.Println("Database migration completed successfully")
+
+	// Initialize S3 service (required for file uploads)
+	s3Service, err := services.InitS3Service()
+	if err != nil {
+		log.Fatalf("Failed to initialize S3 service: %v", err)
+	}
+	log.Println("S3 service initialized successfully")
+
+	// Initialize Image service (wraps S3 with image-specific logic)
+	services.InitImageService(s3Service)
+	log.Println("Image service initialized successfully")
 
 	// Initialize Gin router
 	router := gin.Default()
@@ -74,9 +86,6 @@ func main() {
 		v1.PUT("/orders/:id/assign", middleware.EnsureValidToken(cfg), controllers.AssignOrder)
 		v1.PUT("/orders/:id/review", middleware.EnsureValidToken(cfg), controllers.ReviewOrder)
 		v1.PUT("/orders/:id/status", middleware.EnsureValidToken(cfg), controllers.UpdateOrderStatus)
-
-		// File upload routes - serve uploaded images
-		v1.GET("/uploads/:filename", controllers.GetUploadedImage)
 	}
 
 	// Start server
@@ -89,7 +98,7 @@ func main() {
 
 // healthCheck handles the health check endpoint
 func healthCheck(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Custom Nails API is running",
 	})
@@ -102,7 +111,7 @@ func databaseStatus(c *gin.Context) {
 	// Get the underlying SQL database to check connection
 	sqlDB, err := db.DB()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -114,7 +123,7 @@ func databaseStatus(c *gin.Context) {
 
 	// Ping the database to verify connection
 	if err := sqlDB.Ping(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_CONNECTION_ERROR",
@@ -127,7 +136,7 @@ func databaseStatus(c *gin.Context) {
 	// Get list of tables
 	var tables []string
 	if err := db.Raw("SELECT tablename FROM pg_tables WHERE schemaname = 'public'").Scan(&tables).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_QUERY_ERROR",
@@ -137,7 +146,7 @@ func databaseStatus(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Database connected",
 		"tables":  tables,
@@ -149,7 +158,7 @@ func protectedEndpoint(c *gin.Context) {
 	// Extract user ID from the authenticated token
 	userID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -162,7 +171,7 @@ func protectedEndpoint(c *gin.Context) {
 	// Get the validated claims
 	claims, err := middleware.GetClaims(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -173,7 +182,7 @@ func protectedEndpoint(c *gin.Context) {
 	}
 
 	// Return success with user information
-	c.JSON(http.StatusOK, gin.H{
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "You have accessed a protected endpoint",
 		"data": gin.H{

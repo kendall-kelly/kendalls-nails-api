@@ -8,6 +8,7 @@ import (
 	"github.com/kendall-kelly/kendalls-nails-api/config"
 	"github.com/kendall-kelly/kendalls-nails-api/middleware"
 	"github.com/kendall-kelly/kendalls-nails-api/models"
+	"github.com/kendall-kelly/kendalls-nails-api/services"
 	"github.com/kendall-kelly/kendalls-nails-api/utils"
 )
 
@@ -17,12 +18,31 @@ type CreateOrderRequest struct {
 	Quantity    int    `json:"quantity" binding:"required,gt=0"`
 }
 
+// populateOrderImageURL generates presigned URLs for images
+func populateOrderImageURL(order *models.Order) {
+	if order.ImageS3Key == nil || *order.ImageS3Key == "" {
+		return
+	}
+
+	imageService := services.GetImageService()
+	if url, err := imageService.GetImageURL(*order.ImageS3Key); err == nil {
+		order.ImageURL = &url
+	}
+}
+
+// populateOrdersImageURLs populates image URLs for a slice of orders
+func populateOrdersImageURLs(orders []models.Order) {
+	for i := range orders {
+		populateOrderImageURL(&orders[i])
+	}
+}
+
 // CreateOrder handles POST /api/v1/orders - creates a new order (customers only)
 func CreateOrder(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -36,7 +56,7 @@ func CreateOrder(c *gin.Context) {
 	db := config.GetDB()
 	var user models.User
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "USER_NOT_FOUND",
@@ -48,7 +68,7 @@ func CreateOrder(c *gin.Context) {
 
 	// Check if user is a customer (only customers can create orders)
 	if user.Role != "customer" {
-		c.JSON(http.StatusForbidden, gin.H{
+		c.PureJSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "FORBIDDEN",
@@ -68,7 +88,7 @@ func CreateOrder(c *gin.Context) {
 		// Parse JSON request (legacy support, no file upload)
 		var req CreateOrderRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
+			c.PureJSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "VALIDATION_ERROR",
@@ -87,7 +107,7 @@ func CreateOrder(c *gin.Context) {
 
 		// Validate required fields
 		if description == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
+			c.PureJSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "VALIDATION_ERROR",
@@ -98,7 +118,7 @@ func CreateOrder(c *gin.Context) {
 		}
 
 		if quantityStr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
+			c.PureJSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "VALIDATION_ERROR",
@@ -111,7 +131,7 @@ func CreateOrder(c *gin.Context) {
 		// Parse quantity
 		parsedQuantity, err := strconv.Atoi(quantityStr)
 		if err != nil || parsedQuantity <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{
+			c.PureJSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "VALIDATION_ERROR",
@@ -125,10 +145,13 @@ func CreateOrder(c *gin.Context) {
 		// Handle file upload if present
 		fileHeader, err := c.FormFile("image")
 		if err == nil {
-			// File was provided, validate it
-			if validateErr := utils.ValidateImageFile(fileHeader); validateErr != nil {
-				if fileErr, ok := validateErr.(*utils.FileUploadError); ok {
-					c.JSON(http.StatusBadRequest, gin.H{
+			// File was provided, upload it using image service
+			imageService := services.GetImageService()
+			imageKey, uploadErr := imageService.UploadImage(fileHeader)
+			if uploadErr != nil {
+				// Check if it's a validation error
+				if fileErr, ok := uploadErr.(*utils.FileUploadError); ok {
+					c.PureJSON(http.StatusBadRequest, gin.H{
 						"success": false,
 						"error": gin.H{
 							"code":    fileErr.Code,
@@ -137,31 +160,17 @@ func CreateOrder(c *gin.Context) {
 					})
 					return
 				}
-				c.JSON(http.StatusBadRequest, gin.H{
+				// Generic upload error
+				c.PureJSON(http.StatusInternalServerError, gin.H{
 					"success": false,
 					"error": gin.H{
-						"code":    "FILE_VALIDATION_ERROR",
-						"message": validateErr.Error(),
+						"code":    "IMAGE_UPLOAD_ERROR",
+						"message": "Failed to upload image",
 					},
 				})
 				return
 			}
-
-			// Save the file
-			filename, err := utils.SaveUploadedFile(fileHeader, utils.UploadDir)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"success": false,
-					"error": gin.H{
-						"code":    "FILE_SAVE_ERROR",
-						"message": "Failed to save uploaded file",
-					},
-				})
-				return
-			}
-
-			// Store the filename in imagePath
-			imagePath = &filename
+			imagePath = &imageKey
 		}
 		// If err != nil, no file was provided, which is okay (image is optional)
 	}
@@ -172,11 +181,11 @@ func CreateOrder(c *gin.Context) {
 		Quantity:    quantity,
 		Status:      "submitted",
 		CustomerID:  user.ID,
-		ImagePath:   imagePath,
+		ImageS3Key:  imagePath, // Store S3 key if image was uploaded
 	}
 
 	if err := db.Create(&order).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -188,7 +197,7 @@ func CreateOrder(c *gin.Context) {
 
 	// Load the customer relationship to return complete data
 	if err := db.Preload("Customer").First(&order, order.ID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -198,7 +207,10 @@ func CreateOrder(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
+	// Generate presigned URL for image if using S3
+	populateOrderImageURL(&order)
+
+	c.PureJSON(http.StatusCreated, gin.H{
 		"success": true,
 		"data":    order,
 	})
@@ -211,7 +223,7 @@ func ListOrders(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -225,7 +237,7 @@ func ListOrders(c *gin.Context) {
 	db := config.GetDB()
 	var user models.User
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "USER_NOT_FOUND",
@@ -265,7 +277,7 @@ func ListOrders(c *gin.Context) {
 	// Get total count for pagination info
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -282,7 +294,7 @@ func ListOrders(c *gin.Context) {
 		Limit(limit).
 		Offset(offset).
 		Find(&orders).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -292,7 +304,10 @@ func ListOrders(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	// Generate image URLs for all orders
+	populateOrdersImageURLs(orders)
+
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    orders,
 		"pagination": gin.H{
@@ -309,7 +324,7 @@ func GetOrder(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -323,7 +338,7 @@ func GetOrder(c *gin.Context) {
 	db := config.GetDB()
 	var user models.User
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "USER_NOT_FOUND",
@@ -336,7 +351,7 @@ func GetOrder(c *gin.Context) {
 	// Get order ID from URL parameter
 	orderID := c.Param("id")
 	if orderID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "INVALID_REQUEST",
@@ -349,7 +364,7 @@ func GetOrder(c *gin.Context) {
 	// Fetch the order
 	var order models.Order
 	if err := db.Preload("Customer").Preload("Technician").First(&order, orderID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "ORDER_NOT_FOUND",
@@ -371,7 +386,7 @@ func GetOrder(c *gin.Context) {
 	}
 
 	if !canAccess {
-		c.JSON(http.StatusForbidden, gin.H{
+		c.PureJSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "FORBIDDEN",
@@ -381,7 +396,10 @@ func GetOrder(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	// Generate image URL
+	populateOrderImageURL(&order)
+
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    order,
 	})
@@ -399,7 +417,7 @@ func ReviewOrder(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -413,7 +431,7 @@ func ReviewOrder(c *gin.Context) {
 	db := config.GetDB()
 	var user models.User
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "USER_NOT_FOUND",
@@ -425,7 +443,7 @@ func ReviewOrder(c *gin.Context) {
 
 	// Check if user is a technician (only technicians can review orders)
 	if user.Role != "technician" {
-		c.JSON(http.StatusForbidden, gin.H{
+		c.PureJSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "FORBIDDEN",
@@ -438,7 +456,7 @@ func ReviewOrder(c *gin.Context) {
 	// Get order ID from URL parameter
 	orderID := c.Param("id")
 	if orderID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "INVALID_REQUEST",
@@ -451,7 +469,7 @@ func ReviewOrder(c *gin.Context) {
 	// Fetch the order
 	var order models.Order
 	if err := db.First(&order, orderID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "ORDER_NOT_FOUND",
@@ -463,7 +481,7 @@ func ReviewOrder(c *gin.Context) {
 
 	// Check if order has already been reviewed
 	if order.Status != "submitted" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
+		c.PureJSON(http.StatusUnprocessableEntity, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "INVALID_STATE",
@@ -476,7 +494,7 @@ func ReviewOrder(c *gin.Context) {
 	// Parse request body
 	var req ReviewOrderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "VALIDATION_ERROR",
@@ -491,7 +509,7 @@ func ReviewOrder(c *gin.Context) {
 	switch req.Action {
 	case "accept":
 		if req.Price == nil {
-			c.JSON(http.StatusBadRequest, gin.H{
+			c.PureJSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "VALIDATION_ERROR",
@@ -501,7 +519,7 @@ func ReviewOrder(c *gin.Context) {
 			return
 		}
 		if *req.Price <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{
+			c.PureJSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "VALIDATION_ERROR",
@@ -512,7 +530,7 @@ func ReviewOrder(c *gin.Context) {
 		}
 	case "reject":
 		if req.Feedback == nil || *req.Feedback == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
+			c.PureJSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "VALIDATION_ERROR",
@@ -536,7 +554,7 @@ func ReviewOrder(c *gin.Context) {
 
 	// Save the changes
 	if err := db.Save(&order).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -548,7 +566,7 @@ func ReviewOrder(c *gin.Context) {
 
 	// Load relationships for complete response
 	if err := db.Preload("Customer").Preload("Technician").First(&order, order.ID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -558,7 +576,10 @@ func ReviewOrder(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	// Generate image URL
+	populateOrderImageURL(&order)
+
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    order,
 	})
@@ -574,7 +595,7 @@ func UpdateOrderStatus(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -588,7 +609,7 @@ func UpdateOrderStatus(c *gin.Context) {
 	db := config.GetDB()
 	var user models.User
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "USER_NOT_FOUND",
@@ -600,7 +621,7 @@ func UpdateOrderStatus(c *gin.Context) {
 
 	// Check if user is a technician (only technicians can update order status)
 	if user.Role != "technician" {
-		c.JSON(http.StatusForbidden, gin.H{
+		c.PureJSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "FORBIDDEN",
@@ -613,7 +634,7 @@ func UpdateOrderStatus(c *gin.Context) {
 	// Get order ID from URL parameter
 	orderID := c.Param("id")
 	if orderID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "INVALID_REQUEST",
@@ -626,7 +647,7 @@ func UpdateOrderStatus(c *gin.Context) {
 	// Fetch the order
 	var order models.Order
 	if err := db.First(&order, orderID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "ORDER_NOT_FOUND",
@@ -638,7 +659,7 @@ func UpdateOrderStatus(c *gin.Context) {
 
 	// Check if order is assigned to this technician
 	if order.TechnicianID == nil || *order.TechnicianID != user.ID {
-		c.JSON(http.StatusForbidden, gin.H{
+		c.PureJSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "FORBIDDEN",
@@ -651,7 +672,7 @@ func UpdateOrderStatus(c *gin.Context) {
 	// Parse request body
 	var req UpdateOrderStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "VALIDATION_ERROR",
@@ -673,7 +694,7 @@ func UpdateOrderStatus(c *gin.Context) {
 	// Check if the current status allows the requested transition
 	allowedStatuses, exists := validTransitions[order.Status]
 	if !exists {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
+		c.PureJSON(http.StatusUnprocessableEntity, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "INVALID_STATE",
@@ -693,7 +714,7 @@ func UpdateOrderStatus(c *gin.Context) {
 	}
 
 	if !isValid {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
+		c.PureJSON(http.StatusUnprocessableEntity, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "INVALID_TRANSITION",
@@ -713,7 +734,7 @@ func UpdateOrderStatus(c *gin.Context) {
 
 	// Save the changes
 	if err := db.Save(&order).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -725,7 +746,7 @@ func UpdateOrderStatus(c *gin.Context) {
 
 	// Load relationships for complete response
 	if err := db.Preload("Customer").Preload("Technician").First(&order, order.ID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -735,7 +756,10 @@ func UpdateOrderStatus(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	// Generate image URL
+	populateOrderImageURL(&order)
+
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    order,
 	})
@@ -746,7 +770,7 @@ func AssignOrder(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -760,7 +784,7 @@ func AssignOrder(c *gin.Context) {
 	db := config.GetDB()
 	var user models.User
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "USER_NOT_FOUND",
@@ -772,7 +796,7 @@ func AssignOrder(c *gin.Context) {
 
 	// Check if user is a technician (only technicians can assign orders)
 	if user.Role != "technician" {
-		c.JSON(http.StatusForbidden, gin.H{
+		c.PureJSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "FORBIDDEN",
@@ -785,7 +809,7 @@ func AssignOrder(c *gin.Context) {
 	// Get order ID from URL parameter
 	orderID := c.Param("id")
 	if orderID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "INVALID_REQUEST",
@@ -798,7 +822,7 @@ func AssignOrder(c *gin.Context) {
 	// Fetch the order
 	var order models.Order
 	if err := db.First(&order, orderID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "ORDER_NOT_FOUND",
@@ -810,7 +834,7 @@ func AssignOrder(c *gin.Context) {
 
 	// Check if order is already assigned to another technician
 	if order.TechnicianID != nil && *order.TechnicianID != user.ID {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
+		c.PureJSON(http.StatusUnprocessableEntity, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "ALREADY_ASSIGNED",
@@ -822,7 +846,7 @@ func AssignOrder(c *gin.Context) {
 
 	// Check if order is already assigned to this technician
 	if order.TechnicianID != nil && *order.TechnicianID == user.ID {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
+		c.PureJSON(http.StatusUnprocessableEntity, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "ALREADY_ASSIGNED",
@@ -837,7 +861,7 @@ func AssignOrder(c *gin.Context) {
 
 	// Save the changes
 	if err := db.Save(&order).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -849,7 +873,7 @@ func AssignOrder(c *gin.Context) {
 
 	// Load relationships for complete response
 	if err := db.Preload("Customer").Preload("Technician").First(&order, order.ID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -859,7 +883,10 @@ func AssignOrder(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	// Generate image URL
+	populateOrderImageURL(&order)
+
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    order,
 	})

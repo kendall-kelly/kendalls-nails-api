@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -17,7 +14,7 @@ import (
 	"github.com/kendall-kelly/kendalls-nails-api/controllers"
 	"github.com/kendall-kelly/kendalls-nails-api/middleware"
 	"github.com/kendall-kelly/kendalls-nails-api/models"
-	"github.com/kendall-kelly/kendalls-nails-api/utils"
+	"github.com/kendall-kelly/kendalls-nails-api/services"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 	"gorm.io/driver/sqlite"
@@ -30,11 +27,16 @@ type FileUploadAcceptanceTestSuite struct {
 	server    *httptest.Server
 	db        *gorm.DB
 	uploadDir string
+	mockImage *services.MockImageService
 }
 
 // SetupSuite runs once before all tests
 func (suite *FileUploadAcceptanceTestSuite) SetupSuite() {
 	gin.SetMode(gin.TestMode)
+
+	// Setup mock image service for testing
+	suite.mockImage = services.NewMockImageService()
+	suite.mockImage.SetAsMockForTesting()
 
 	// Setup database
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -45,12 +47,6 @@ func (suite *FileUploadAcceptanceTestSuite) SetupSuite() {
 	suite.NoError(err)
 
 	config.SetDB(db)
-
-	// Create temporary upload directory
-	suite.uploadDir = suite.T().TempDir()
-
-	// Override the global upload directory for testing
-	utils.UploadDir = suite.uploadDir
 
 	// Create test server
 	router := suite.createRouter()
@@ -73,6 +69,9 @@ func (suite *FileUploadAcceptanceTestSuite) SetupTest() {
 	// Clean up database before each test
 	suite.db.Exec("DELETE FROM orders")
 	suite.db.Exec("DELETE FROM users")
+
+	// Clear mock image storage storage
+	suite.mockImage.Clear()
 }
 
 // createRouter creates the full application router for acceptance testing
@@ -84,7 +83,6 @@ func (suite *FileUploadAcceptanceTestSuite) createRouter() *gin.Engine {
 	{
 		v1.POST("/orders", suite.mockAuthMiddleware("auth0|customer", "customer"), controllers.CreateOrder)
 		v1.GET("/orders/:id", suite.mockAuthMiddleware("auth0|customer", "customer"), controllers.GetOrder)
-		v1.GET("/uploads/:filename", controllers.GetUploadedImage)
 	}
 
 	return router
@@ -184,18 +182,18 @@ func (suite *FileUploadAcceptanceTestSuite) TestCompleteFileUploadWorkflow_Accep
 	assert.Equal(suite.T(), "submitted", orderData["status"])
 
 	// Verify image was uploaded
-	assert.NotNil(suite.T(), orderData["image_path"])
-	imagePath := orderData["image_path"].(string)
-	assert.NotEmpty(suite.T(), imagePath)
-	assert.Contains(suite.T(), imagePath, ".png")
+	assert.NotNil(suite.T(), orderData["image_s3_key"])
+	s3Key := orderData["image_s3_key"].(string)
+	assert.NotEmpty(suite.T(), s3Key)
+	assert.Contains(suite.T(), s3Key, ".png")
 
-	// Step 4: Verify the file was actually saved to disk
-	fullImagePath := filepath.Join(suite.uploadDir, imagePath)
-	assert.FileExists(suite.T(), fullImagePath)
+	// Step 4: Verify the file was actually uploaded to mock image storage
+	assert.True(suite.T(), suite.mockImage.ImageExists(s3Key), "File should exist in mock image storage")
 
-	// Verify file content
-	savedContent, err := os.ReadFile(fullImagePath)
-	suite.NoError(err)
+	// Verify file content in mock image storage
+	uploadedFiles := suite.mockImage.GetUploadedImages()
+	savedContent, exists := uploadedFiles[s3Key]
+	assert.True(suite.T(), exists, "File content should be stored in mock image storage")
 	assert.Equal(suite.T(), imageContent, savedContent)
 
 	// Step 5: Customer retrieves the order to verify it includes the image path
@@ -215,25 +213,15 @@ func (suite *FileUploadAcceptanceTestSuite) TestCompleteFileUploadWorkflow_Accep
 	assert.True(suite.T(), getResponse["success"].(bool))
 	retrievedOrder := getResponse["data"].(map[string]interface{})
 
-	// Verify the image path is included
-	assert.Equal(suite.T(), imagePath, retrievedOrder["image_path"].(string))
+	// Verify the S3 key is included
+	assert.Equal(suite.T(), s3Key, retrievedOrder["image_s3_key"].(string))
 
-	// Step 6: Access the uploaded image via the static file endpoint
-	imageURL := suite.server.URL + "/api/v1/uploads/" + imagePath
-	imageReq, err := http.NewRequest("GET", imageURL, nil)
-	suite.NoError(err)
-
-	imageResp, err := http.DefaultClient.Do(imageReq)
-	suite.NoError(err)
-	defer imageResp.Body.Close()
-
-	// Verify image is accessible
-	assert.Equal(suite.T(), http.StatusOK, imageResp.StatusCode)
-
-	// Verify image content matches what was uploaded
-	downloadedContent, err := io.ReadAll(imageResp.Body)
-	suite.NoError(err)
-	assert.Equal(suite.T(), imageContent, downloadedContent)
+	// Step 6: Verify presigned URL is included (when using S3)
+	// The image_url field should be populated with a presigned URL
+	assert.NotNil(suite.T(), retrievedOrder["image_url"])
+	imageURL := retrievedOrder["image_url"].(string)
+	assert.NotEmpty(suite.T(), imageURL)
+	assert.Contains(suite.T(), imageURL, s3Key)
 
 	// Step 7: Verify in the database
 	var dbOrder models.Order
@@ -243,8 +231,8 @@ func (suite *FileUploadAcceptanceTestSuite) TestCompleteFileUploadWorkflow_Accep
 	assert.Equal(suite.T(), "Beautiful pink nails with glitter and stars", dbOrder.Description)
 	assert.Equal(suite.T(), 2, dbOrder.Quantity)
 	assert.Equal(suite.T(), "submitted", dbOrder.Status)
-	assert.NotNil(suite.T(), dbOrder.ImagePath)
-	assert.Equal(suite.T(), imagePath, *dbOrder.ImagePath)
+	assert.NotNil(suite.T(), dbOrder.ImageS3Key)
+	assert.Equal(suite.T(), s3Key, *dbOrder.ImageS3Key)
 	assert.Equal(suite.T(), customer.ID, dbOrder.CustomerID)
 	assert.Equal(suite.T(), "Jane Designer", dbOrder.Customer.Name)
 }
@@ -289,7 +277,7 @@ func (suite *FileUploadAcceptanceTestSuite) TestCreateOrderWithoutImage_Acceptan
 	// Verify order details
 	assert.Equal(suite.T(), "Simple nail design without image", orderData["description"])
 	assert.Equal(suite.T(), float64(1), orderData["quantity"])
-	assert.Nil(suite.T(), orderData["image_path"]) // No image
+	assert.Nil(suite.T(), orderData["image_s3_key"]) // No image
 
 	// Step 4: Verify in the database
 	orderID := uint(orderData["id"].(float64))
@@ -297,7 +285,7 @@ func (suite *FileUploadAcceptanceTestSuite) TestCreateOrderWithoutImage_Acceptan
 	err = suite.db.First(&dbOrder, orderID).Error
 	suite.NoError(err)
 
-	assert.Nil(suite.T(), dbOrder.ImagePath)
+	assert.Nil(suite.T(), dbOrder.ImageS3Key)
 }
 
 // TestFileUploadValidation_Acceptance tests end-to-end validation errors
@@ -374,7 +362,7 @@ func (suite *FileUploadAcceptanceTestSuite) TestMultipleOrdersWithImages_Accepta
 	var response1 map[string]interface{}
 	json.NewDecoder(resp1.Body).Decode(&response1)
 	order1Data := response1["data"].(map[string]interface{})
-	imagePath1 := order1Data["image_path"].(string)
+	s3Key1 := order1Data["image_s3_key"].(string)
 
 	// Create second order with different image
 	image2Content := []byte("Second design image content - different content")
@@ -396,18 +384,19 @@ func (suite *FileUploadAcceptanceTestSuite) TestMultipleOrdersWithImages_Accepta
 	var response2 map[string]interface{}
 	json.NewDecoder(resp2.Body).Decode(&response2)
 	order2Data := response2["data"].(map[string]interface{})
-	imagePath2 := order2Data["image_path"].(string)
+	s3Key2 := order2Data["image_s3_key"].(string)
 
-	// Verify images have different paths
-	assert.NotEqual(suite.T(), imagePath1, imagePath2)
+	// Verify images have different S3 keys
+	assert.NotEqual(suite.T(), s3Key1, s3Key2)
 
-	// Verify both files exist
-	assert.FileExists(suite.T(), filepath.Join(suite.uploadDir, imagePath1))
-	assert.FileExists(suite.T(), filepath.Join(suite.uploadDir, imagePath2))
+	// Verify both files exist in mock image storage
+	assert.True(suite.T(), suite.mockImage.ImageExists(s3Key1), "First file should exist in mock image storage")
+	assert.True(suite.T(), suite.mockImage.ImageExists(s3Key2), "Second file should exist in mock image storage")
 
-	// Verify both files have different content
-	content1, _ := os.ReadFile(filepath.Join(suite.uploadDir, imagePath1))
-	content2, _ := os.ReadFile(filepath.Join(suite.uploadDir, imagePath2))
+	// Verify both files have different content in mock image storage
+	uploadedFiles := suite.mockImage.GetUploadedImages()
+	content1 := uploadedFiles[s3Key1]
+	content2 := uploadedFiles[s3Key2]
 	assert.NotEqual(suite.T(), content1, content2)
 	assert.Equal(suite.T(), image1Content, content1)
 	assert.Equal(suite.T(), image2Content, content2)
