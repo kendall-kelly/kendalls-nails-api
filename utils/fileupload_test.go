@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"mime/multipart"
 	"net/textproto"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -132,91 +130,6 @@ func TestValidateImageFile_CaseInsensitive(t *testing.T) {
 
 	err := ValidateImageFile(fileHeader)
 	assert.NoError(t, err, "Validation should be case-insensitive")
-}
-
-func TestSaveUploadedFile_Success(t *testing.T) {
-	// Create a temporary directory for testing
-	tmpDir := t.TempDir()
-
-	// Create test file
-	content := []byte("fake png content for testing")
-	fileHeader := createTestFileHeader("test.png", int64(len(content)), content)
-	require.NotNil(t, fileHeader)
-
-	// Save the file
-	filename, err := SaveUploadedFile(fileHeader, tmpDir)
-	require.NoError(t, err)
-	assert.NotEmpty(t, filename)
-
-	// Verify file was created
-	fullPath := filepath.Join(tmpDir, filename)
-	assert.FileExists(t, fullPath)
-
-	// Verify file content
-	savedContent, err := os.ReadFile(fullPath)
-	require.NoError(t, err)
-	assert.Equal(t, content, savedContent)
-}
-
-func TestSaveUploadedFile_CreatesDirectory(t *testing.T) {
-	// Create a temporary directory for testing
-	tmpDir := t.TempDir()
-	uploadDir := filepath.Join(tmpDir, "uploads", "nested")
-
-	// Directory should not exist yet
-	_, err := os.Stat(uploadDir)
-	assert.True(t, os.IsNotExist(err))
-
-	// Create test file
-	content := []byte("test content")
-	fileHeader := createTestFileHeader("test.png", int64(len(content)), content)
-	require.NotNil(t, fileHeader)
-
-	// Save the file (should create directory)
-	filename, err := SaveUploadedFile(fileHeader, uploadDir)
-	require.NoError(t, err)
-	assert.NotEmpty(t, filename)
-
-	// Verify directory was created
-	_, err = os.Stat(uploadDir)
-	assert.NoError(t, err)
-
-	// Verify file was created
-	fullPath := filepath.Join(uploadDir, filename)
-	assert.FileExists(t, fullPath)
-}
-
-func TestSaveUploadedFile_UniqueFilenames(t *testing.T) {
-	// Create a temporary directory for testing
-	tmpDir := t.TempDir()
-
-	// Save same filename twice - should generate different filenames based on size
-	content1 := []byte("content1")
-	fileHeader1 := createTestFileHeader("test.png", int64(len(content1)), content1)
-	require.NotNil(t, fileHeader1)
-
-	content2 := []byte("content2different")
-	fileHeader2 := createTestFileHeader("test.png", int64(len(content2)), content2)
-	require.NotNil(t, fileHeader2)
-
-	filename1, err := SaveUploadedFile(fileHeader1, tmpDir)
-	require.NoError(t, err)
-
-	filename2, err := SaveUploadedFile(fileHeader2, tmpDir)
-	require.NoError(t, err)
-
-	// Filenames should be different due to different sizes
-	assert.NotEqual(t, filename1, filename2)
-}
-
-func TestGetImageURL_WithFilename(t *testing.T) {
-	url := GetImageURL("test123.png")
-	assert.Equal(t, "/api/v1/uploads/test123.png", url)
-}
-
-func TestGetImageURL_EmptyFilename(t *testing.T) {
-	url := GetImageURL("")
-	assert.Equal(t, "", url)
 }
 
 func TestFileUploadError_Error(t *testing.T) {

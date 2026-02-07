@@ -396,34 +396,41 @@ GET /api/v1/uploads/:filename (serve the uploaded file)
 
 ---
 
-### Iteration 11: AWS S3 Integration
+### Iteration 11: AWS S3 Integration ✅
 **Duration**: 3-4 hours
 **Complexity**: Intermediate-Advanced
+**Status**: COMPLETED
 
 **What you'll build:**
 - Install AWS SDK for Go
-- Configure S3 bucket (or use LocalStack for local dev)
+- Configure S3 bucket with AWS credentials
 - Replace local file upload with S3 upload
 - Generate presigned URLs for private images
 - Update image serving logic
 
 **Deliverable:**
-- Files uploaded to S3 instead of local disk
-- Order model stores S3 key
-- API returns presigned URLs for accessing images
+- Files uploaded to S3 (no local storage fallback)
+- Order model stores S3 key in `image_s3_key` field
+- API returns presigned URLs (valid 1 hour) in `image_url` field
+- All JSON responses use PureJSON to prevent HTML escaping
 
 **How to test:**
 - Upload order with image
 - Verify file appears in S3 bucket
 - Get order details and verify presigned URL is returned
 - Access presigned URL and verify image loads
-- Wait for URL to expire (if testing expiration)
+- Verify URLs contain proper `&` characters (not `\u0026`)
 
 **What a junior engineer learns:**
-- AWS S3 basics
+- AWS S3 basics and SDK v2 for Go
 - Cloud storage integration
-- Presigned URLs
-- Environment-specific configurations (local vs cloud)
+- Presigned URLs for secure access
+- JSON encoding considerations (HTML escaping)
+
+**Design decisions:**
+- S3 is now required (no local storage fallback for simplicity)
+- Using `PureJSON` to prevent HTML escaping of presigned URLs
+- Presigned URLs expire after 1 hour for security
 
 ---
 

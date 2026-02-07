@@ -1,4 +1,4 @@
-.PHONY: help run test build clean db-reset
+.PHONY: help run test build clean
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'

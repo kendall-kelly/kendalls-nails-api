@@ -89,6 +89,18 @@ func (c *Config) Validate() error {
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
+	if c.AWSRegion == "" {
+		return fmt.Errorf("AWS_REGION is required")
+	}
+	if c.AWSS3Bucket == "" {
+		return fmt.Errorf("AWS_S3_BUCKET is required")
+	}
+	if c.AWSAccessKeyID == "" {
+		return fmt.Errorf("AWS_ACCESS_KEY_ID is required")
+	}
+	if c.AWSSecretAccessKey == "" {
+		return fmt.Errorf("AWS_SECRET_ACCESS_KEY is required")
+	}
 	return nil
 }
 

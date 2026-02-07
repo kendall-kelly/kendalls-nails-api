@@ -23,7 +23,7 @@ func CreateUser(c *gin.Context) {
 	// Get the Auth0 user ID from the validated JWT
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -36,7 +36,7 @@ func CreateUser(c *gin.Context) {
 	// Get the access token to call Auth0's /userinfo endpoint
 	accessToken, err := middleware.GetAccessToken(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "MISSING_TOKEN",
@@ -51,7 +51,7 @@ func CreateUser(c *gin.Context) {
 	auth0Service := services.NewAuth0Service(cfg)
 	userInfo, err := auth0Service.GetUserInfo(accessToken)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "AUTH0_ERROR",
@@ -63,7 +63,7 @@ func CreateUser(c *gin.Context) {
 
 	// Validate that required fields are present
 	if userInfo.Email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "MISSING_EMAIL",
@@ -74,7 +74,7 @@ func CreateUser(c *gin.Context) {
 	}
 
 	if userInfo.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "MISSING_NAME",
@@ -108,7 +108,7 @@ func CreateUser(c *gin.Context) {
 		if strings.Contains(errMsg, "duplicate") ||
 		   strings.Contains(errMsg, "unique constraint") ||
 		   strings.Contains(errMsg, "unique") {
-			c.JSON(http.StatusConflict, gin.H{
+			c.PureJSON(http.StatusConflict, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "USER_EXISTS",
@@ -118,7 +118,7 @@ func CreateUser(c *gin.Context) {
 			return
 		}
 
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -128,7 +128,7 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
+	c.PureJSON(http.StatusCreated, gin.H{
 		"success": true,
 		"data":    user,
 	})
@@ -139,7 +139,7 @@ func GetMyProfile(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -153,7 +153,7 @@ func GetMyProfile(c *gin.Context) {
 	db := config.GetDB()
 	var user models.User
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "USER_NOT_FOUND",
@@ -163,7 +163,7 @@ func GetMyProfile(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    user,
 	})
@@ -174,7 +174,7 @@ func UpdateMyProfile(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token
 	auth0ID, err := middleware.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
+		c.PureJSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UNAUTHORIZED",
@@ -187,7 +187,7 @@ func UpdateMyProfile(c *gin.Context) {
 	// Parse request body
 	var req UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		c.PureJSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "VALIDATION_ERROR",
@@ -202,7 +202,7 @@ func UpdateMyProfile(c *gin.Context) {
 	db := config.GetDB()
 	var user models.User
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		c.PureJSON(http.StatusNotFound, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "USER_NOT_FOUND",
@@ -223,7 +223,7 @@ func UpdateMyProfile(c *gin.Context) {
 
 	// If no fields to update, return current user
 	if len(updates) == 0 {
-		c.JSON(http.StatusOK, gin.H{
+		c.PureJSON(http.StatusOK, gin.H{
 			"success": true,
 			"data":    user,
 		})
@@ -237,7 +237,7 @@ func UpdateMyProfile(c *gin.Context) {
 		if strings.Contains(errMsg, "duplicate") ||
 		   strings.Contains(errMsg, "unique constraint") ||
 		   strings.Contains(errMsg, "unique") {
-			c.JSON(http.StatusConflict, gin.H{
+			c.PureJSON(http.StatusConflict, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "EMAIL_EXISTS",
@@ -247,7 +247,7 @@ func UpdateMyProfile(c *gin.Context) {
 			return
 		}
 
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -259,7 +259,7 @@ func UpdateMyProfile(c *gin.Context) {
 
 	// Fetch updated user to return
 	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.PureJSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "DATABASE_ERROR",
@@ -269,7 +269,7 @@ func UpdateMyProfile(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.PureJSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    user,
 	})

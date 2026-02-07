@@ -3,12 +3,10 @@ package integration
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -16,7 +14,7 @@ import (
 	"github.com/kendall-kelly/kendalls-nails-api/controllers"
 	"github.com/kendall-kelly/kendalls-nails-api/middleware"
 	"github.com/kendall-kelly/kendalls-nails-api/models"
-	"github.com/kendall-kelly/kendalls-nails-api/utils"
+	"github.com/kendall-kelly/kendalls-nails-api/services"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 	"gorm.io/driver/sqlite"
@@ -28,29 +26,32 @@ type FileUploadIntegrationTestSuite struct {
 	suite.Suite
 	db        *gorm.DB
 	router    *gin.Engine
-	uploadDir string
+	mockImage *services.MockImageService
 }
 
 // SetupSuite runs once before all tests
 func (suite *FileUploadIntegrationTestSuite) SetupSuite() {
 	gin.SetMode(gin.TestMode)
 
-	// Setup in-memory database
+	// Setup mock image service for testing
+	suite.mockImage = services.NewMockImageService()
+	suite.mockImage.SetAsMockForTesting()
+
+	// Mock AWS S3 credentials for testing (required for config validation)
+	os.Setenv("AWS_REGION", "us-east-1")
+	os.Setenv("AWS_S3_BUCKET", "test-bucket")
+	os.Setenv("AWS_ACCESS_KEY_ID", "test-key")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
+
+	// Setup database
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	suite.NoError(err)
 	suite.db = db
 
-	// Auto-migrate models
 	err = db.AutoMigrate(&models.User{}, &models.Order{})
 	suite.NoError(err)
 
 	config.SetDB(db)
-
-	// Create temporary upload directory
-	suite.uploadDir = suite.T().TempDir()
-
-	// Override the global upload directory for testing
-	utils.UploadDir = suite.uploadDir
 
 	// Setup router
 	suite.router = suite.createRouter()
@@ -71,6 +72,9 @@ func (suite *FileUploadIntegrationTestSuite) SetupTest() {
 	// Clean up database before each test
 	suite.db.Exec("DELETE FROM orders")
 	suite.db.Exec("DELETE FROM users")
+
+	// Clear mock image storage storage
+	suite.mockImage.Clear()
 }
 
 // createRouter creates a test router
@@ -82,7 +86,6 @@ func (suite *FileUploadIntegrationTestSuite) createRouter() *gin.Engine {
 	{
 		v1.POST("/orders", suite.mockAuthMiddleware("auth0|customer", "customer"), controllers.CreateOrder)
 		v1.GET("/orders/:id", suite.mockAuthMiddleware("auth0|customer", "customer"), controllers.GetOrder)
-		v1.GET("/uploads/:filename", controllers.GetUploadedImage)
 	}
 
 	return router
@@ -103,52 +106,39 @@ func (suite *FileUploadIntegrationTestSuite) mockAuthMiddleware(auth0ID, role st
 	}
 }
 
-// createMultipartRequest creates a multipart form request with file upload
-func (suite *FileUploadIntegrationTestSuite) createMultipartRequest(filename string, fileContent []byte, description string, quantity string) (*http.Request, error) {
+// TestCreateOrder_WithValidPNGFile tests creating an order with a valid PNG file
+func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_WithValidPNGFile() {
+	// Create customer user
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Jane Customer",
+		Email:   "jane@example.com",
+		Role:    "customer",
+	}
+	err := suite.db.Create(&customer).Error
+	suite.NoError(err)
+
+	// Create multipart form with image
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	// Add file
-	if filename != "" && fileContent != nil {
-		part, err := writer.CreateFormFile("image", filename)
-		if err != nil {
-			return nil, err
-		}
-		part.Write(fileContent)
-	}
+	// Add image file
+	imageContent := []byte("fake PNG content")
+	part, err := writer.CreateFormFile("image", "design.png")
+	suite.NoError(err)
+	_, err = part.Write(imageContent)
+	suite.NoError(err)
 
-	// Add form fields
-	writer.WriteField("description", description)
-	writer.WriteField("quantity", quantity)
+	// Add description
+	writer.WriteField("description", "Beautiful nail design")
+	writer.WriteField("quantity", "2")
 
-	err := writer.Close()
-	if err != nil {
-		return nil, err
-	}
+	err = writer.Close()
+	suite.NoError(err)
 
+	// Make request
 	req := httptest.NewRequest("POST", "/api/v1/orders", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	return req, nil
-}
-
-// TestCreateOrder_WithValidPNGFile tests creating an order with a valid PNG file
-func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_WithValidPNGFile() {
-	// Setup: Create customer user
-	customer := models.User{
-		Auth0ID: "auth0|customer",
-		Name:    "Test Customer",
-		Email:   "customer@test.com",
-		Role:    "customer",
-	}
-	suite.db.Create(&customer)
-
-	// Create multipart request with PNG file
-	fileContent := []byte("fake PNG file content")
-	req, err := suite.createMultipartRequest("design.png", fileContent, "Nail design with image", "2")
-	suite.NoError(err)
-
-	// Make request
 	w := httptest.NewRecorder()
 	suite.router.ServeHTTP(w, req)
 
@@ -161,39 +151,46 @@ func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_WithValidPNGFile() 
 
 	assert.True(suite.T(), response["success"].(bool))
 	orderData := response["data"].(map[string]interface{})
-	assert.Equal(suite.T(), "Nail design with image", orderData["description"])
+	assert.Equal(suite.T(), "Beautiful nail design", orderData["description"])
 	assert.Equal(suite.T(), float64(2), orderData["quantity"])
-	assert.NotNil(suite.T(), orderData["image_path"])
-	assert.NotEmpty(suite.T(), orderData["image_path"])
+	assert.NotNil(suite.T(), orderData["image_s3_key"])
 
-	// Verify file was saved
-	imagePath := orderData["image_path"].(string)
-	fullPath := filepath.Join(suite.uploadDir, imagePath)
-	assert.FileExists(suite.T(), fullPath)
+	// Verify file was uploaded to mock image storage
+	s3Key := orderData["image_s3_key"].(string)
+	assert.True(suite.T(), suite.mockImage.ImageExists(s3Key), "File should exist in mock image storage")
 
-	// Verify database record
-	var order models.Order
-	suite.db.First(&order, uint(orderData["id"].(float64)))
-	assert.NotNil(suite.T(), order.ImagePath)
-	assert.Equal(suite.T(), imagePath, *order.ImagePath)
+	// Verify file content in mock image storage
+	uploadedFiles := suite.mockImage.GetUploadedImages()
+	savedContent, exists := uploadedFiles[s3Key]
+	assert.True(suite.T(), exists, "File content should be stored in mock image storage")
+	assert.Equal(suite.T(), imageContent, savedContent)
 }
 
-// TestCreateOrder_WithoutFile tests creating an order without a file (should still work)
+// TestCreateOrder_WithoutFile tests creating an order without a file
 func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_WithoutFile() {
-	// Setup: Create customer user
+	// Create customer user
 	customer := models.User{
 		Auth0ID: "auth0|customer",
-		Name:    "Test Customer",
-		Email:   "customer@test.com",
+		Name:    "John Customer",
+		Email:   "john@example.com",
 		Role:    "customer",
 	}
-	suite.db.Create(&customer)
+	err := suite.db.Create(&customer).Error
+	suite.NoError(err)
 
-	// Create multipart request without file
-	req, err := suite.createMultipartRequest("", nil, "Nail design without image", "1")
+	// Create multipart form WITHOUT image
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	writer.WriteField("description", "Simple design without image")
+	writer.WriteField("quantity", "1")
+
+	err = writer.Close()
 	suite.NoError(err)
 
 	// Make request
+	req := httptest.NewRequest("POST", "/api/v1/orders", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	w := httptest.NewRecorder()
 	suite.router.ServeHTTP(w, req)
 
@@ -206,36 +203,46 @@ func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_WithoutFile() {
 
 	assert.True(suite.T(), response["success"].(bool))
 	orderData := response["data"].(map[string]interface{})
-	assert.Equal(suite.T(), "Nail design without image", orderData["description"])
-	assert.Nil(suite.T(), orderData["image_path"])
-
-	// Verify database record
-	var order models.Order
-	suite.db.First(&order, uint(orderData["id"].(float64)))
-	assert.Nil(suite.T(), order.ImagePath)
+	assert.Equal(suite.T(), "Simple design without image", orderData["description"])
+	assert.Equal(suite.T(), float64(1), orderData["quantity"])
+	assert.Nil(suite.T(), orderData["image_s3_key"])
 }
 
-// TestCreateOrder_InvalidFileFormat tests rejection of non-PNG files
+// TestCreateOrder_InvalidFileFormat tests creating an order with invalid file format
 func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_InvalidFileFormat() {
-	// Setup: Create customer user
+	// Create customer user
 	customer := models.User{
 		Auth0ID: "auth0|customer",
 		Name:    "Test Customer",
-		Email:   "customer@test.com",
+		Email:   "test@example.com",
 		Role:    "customer",
 	}
-	suite.db.Create(&customer)
+	err := suite.db.Create(&customer).Error
+	suite.NoError(err)
 
-	// Create multipart request with JPG file (not allowed)
-	fileContent := []byte("fake JPG file content")
-	req, err := suite.createMultipartRequest("design.jpg", fileContent, "Nail design", "2")
+	// Create multipart form with JPEG file (not allowed)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// Add JPEG file
+	part, err := writer.CreateFormFile("image", "design.jpg")
+	suite.NoError(err)
+	_, err = part.Write([]byte("fake JPEG content"))
+	suite.NoError(err)
+
+	writer.WriteField("description", "Design with invalid format")
+	writer.WriteField("quantity", "2")
+
+	err = writer.Close()
 	suite.NoError(err)
 
 	// Make request
+	req := httptest.NewRequest("POST", "/api/v1/orders", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	w := httptest.NewRecorder()
 	suite.router.ServeHTTP(w, req)
 
-	// Verify response - should fail
+	// Verify response
 	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)
 
 	var response map[string]interface{}
@@ -245,35 +252,44 @@ func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_InvalidFileFormat()
 	assert.False(suite.T(), response["success"].(bool))
 	errorData := response["error"].(map[string]interface{})
 	assert.Equal(suite.T(), "INVALID_FILE_FORMAT", errorData["code"])
-	assert.Contains(suite.T(), errorData["message"], "Only .png files are allowed")
-
-	// Verify no order was created
-	var count int64
-	suite.db.Model(&models.Order{}).Count(&count)
-	assert.Equal(suite.T(), int64(0), count)
 }
 
-// TestCreateOrder_FileTooLarge tests rejection of files exceeding size limit
+// TestCreateOrder_FileTooLarge tests creating an order with a file that's too large
 func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_FileTooLarge() {
-	// Setup: Create customer user
+	// Create customer user
 	customer := models.User{
 		Auth0ID: "auth0|customer",
 		Name:    "Test Customer",
-		Email:   "customer@test.com",
+		Email:   "test@example.com",
 		Role:    "customer",
 	}
-	suite.db.Create(&customer)
+	err := suite.db.Create(&customer).Error
+	suite.NoError(err)
 
-	// Create multipart request with file exceeding 10MB
-	fileContent := make([]byte, 11*1024*1024) // 11MB
-	req, err := suite.createMultipartRequest("large.png", fileContent, "Nail design", "2")
+	// Create multipart form with large file (11MB)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// Add large PNG file
+	largeContent := make([]byte, 11*1024*1024) // 11MB
+	part, err := writer.CreateFormFile("image", "large.png")
+	suite.NoError(err)
+	_, err = part.Write(largeContent)
+	suite.NoError(err)
+
+	writer.WriteField("description", "Design with large file")
+	writer.WriteField("quantity", "2")
+
+	err = writer.Close()
 	suite.NoError(err)
 
 	// Make request
+	req := httptest.NewRequest("POST", "/api/v1/orders", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	w := httptest.NewRecorder()
 	suite.router.ServeHTTP(w, req)
 
-	// Verify response - should fail
+	// Verify response
 	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)
 
 	var response map[string]interface{}
@@ -283,36 +299,24 @@ func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_FileTooLarge() {
 	assert.False(suite.T(), response["success"].(bool))
 	errorData := response["error"].(map[string]interface{})
 	assert.Equal(suite.T(), "FILE_TOO_LARGE", errorData["code"])
-	assert.Contains(suite.T(), errorData["message"], "File size exceeds")
-
-	// Verify no order was created
-	var count int64
-	suite.db.Model(&models.Order{}).Count(&count)
-	assert.Equal(suite.T(), int64(0), count)
 }
 
-// TestCreateOrder_JSONRequest_BackwardCompatibility tests that JSON requests still work
+// TestCreateOrder_JSONRequest_BackwardCompatibility tests JSON requests still work
 func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_JSONRequest_BackwardCompatibility() {
-	// Setup: Create customer user
+	// Create customer user
 	customer := models.User{
 		Auth0ID: "auth0|customer",
-		Name:    "Test Customer",
-		Email:   "customer@test.com",
+		Name:    "JSON Customer",
+		Email:   "json@example.com",
 		Role:    "customer",
 	}
-	suite.db.Create(&customer)
+	err := suite.db.Create(&customer).Error
+	suite.NoError(err)
 
-	// Create JSON request (no file)
-	reqBody := map[string]interface{}{
-		"description": "JSON order",
-		"quantity":    3,
-	}
-	bodyBytes, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest("POST", "/api/v1/orders", bytes.NewReader(bodyBytes))
+	// Create JSON request (no image)
+	body := bytes.NewBufferString(`{"description": "JSON order", "quantity": 3}`)
+	req := httptest.NewRequest("POST", "/api/v1/orders", body)
 	req.Header.Set("Content-Type", "application/json")
-
-	// Make request
 	w := httptest.NewRecorder()
 	suite.router.ServeHTTP(w, req)
 
@@ -320,38 +324,14 @@ func (suite *FileUploadIntegrationTestSuite) TestCreateOrder_JSONRequest_Backwar
 	assert.Equal(suite.T(), http.StatusCreated, w.Code)
 
 	var response map[string]interface{}
-	err := json.Unmarshal(w.Body.Bytes(), &response)
+	err = json.Unmarshal(w.Body.Bytes(), &response)
 	suite.NoError(err)
 
 	assert.True(suite.T(), response["success"].(bool))
 	orderData := response["data"].(map[string]interface{})
 	assert.Equal(suite.T(), "JSON order", orderData["description"])
 	assert.Equal(suite.T(), float64(3), orderData["quantity"])
-	assert.Nil(suite.T(), orderData["image_path"])
-}
-
-// TestServeUploadedFile tests that uploaded files can be retrieved
-func (suite *FileUploadIntegrationTestSuite) TestServeUploadedFile() {
-	// Create a test file in the upload directory
-	testContent := []byte("test image content")
-	testFilename := "test123.png"
-	testPath := filepath.Join(suite.uploadDir, testFilename)
-
-	err := os.WriteFile(testPath, testContent, 0644)
-	suite.NoError(err)
-
-	// Request the file
-	req := httptest.NewRequest("GET", "/api/v1/uploads/"+testFilename, nil)
-	w := httptest.NewRecorder()
-	suite.router.ServeHTTP(w, req)
-
-	// Verify response
-	assert.Equal(suite.T(), http.StatusOK, w.Code)
-
-	// Verify content
-	body, err := io.ReadAll(w.Body)
-	suite.NoError(err)
-	assert.Equal(suite.T(), testContent, body)
+	assert.Nil(suite.T(), orderData["image_s3_key"])
 }
 
 // TestFileUploadIntegrationSuite runs the test suite

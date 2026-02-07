@@ -38,6 +38,11 @@ func (suite *OrderIntegrationTestSuite) SetupSuite() {
 	os.Setenv("AUTH0_DOMAIN", "test.auth0.com")
 	os.Setenv("AUTH0_AUDIENCE", "https://api.test.com")
 	os.Setenv("PORT", "8080")
+	// Mock AWS S3 credentials for testing
+	os.Setenv("AWS_REGION", "us-east-1")
+	os.Setenv("AWS_S3_BUCKET", "test-bucket")
+	os.Setenv("AWS_ACCESS_KEY_ID", "test-key")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
 
 	// Load configuration
 	cfg, err := config.Load()
