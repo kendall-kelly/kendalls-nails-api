@@ -24,10 +24,9 @@ import (
 // FileUploadIntegrationTestSuite defines the integration test suite for file upload
 type FileUploadIntegrationTestSuite struct {
 	suite.Suite
-	db         *gorm.DB
-	router     *gin.Engine
-	uploadDir  string
-	mockImage  *services.MockImageService
+	db        *gorm.DB
+	router    *gin.Engine
+	mockImage *services.MockImageService
 }
 
 // SetupSuite runs once before all tests

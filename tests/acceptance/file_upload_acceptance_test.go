@@ -26,7 +26,6 @@ type FileUploadAcceptanceTestSuite struct {
 	suite.Suite
 	server    *httptest.Server
 	db        *gorm.DB
-	uploadDir string
 	mockImage *services.MockImageService
 }
 

@@ -81,7 +81,11 @@ func (s *S3Service) UploadFile(fileHeader *multipart.FileHeader) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Printf("warning: failed to close file: %v", closeErr)
+		}
+	}()
 
 	// Read file content
 	content, err := io.ReadAll(file)

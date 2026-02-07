@@ -31,7 +31,9 @@ func (m *MockS3Service) UploadFile(fileHeader *multipart.FileHeader) (string, er
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close() // Ignore error in mock
+	}()
 
 	// Read file content
 	content := make([]byte, fileHeader.Size)
