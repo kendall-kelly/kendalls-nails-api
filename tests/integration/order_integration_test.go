@@ -14,6 +14,7 @@ import (
 	"github.com/kendall-kelly/kendalls-nails-api/controllers"
 	"github.com/kendall-kelly/kendalls-nails-api/middleware"
 	"github.com/kendall-kelly/kendalls-nails-api/models"
+	"github.com/kendall-kelly/kendalls-nails-api/services"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 	"gorm.io/driver/sqlite"
@@ -63,6 +64,13 @@ func (suite *OrderIntegrationTestSuite) SetupTest() {
 
 	// Set the database in config
 	config.SetDB(db)
+
+	// Initialize mock S3 service for testing
+	mockS3 := services.NewMockS3Service()
+	mockS3.SetAsMockForTesting()
+
+	// Initialize image service with mock S3
+	services.InitImageService(mockS3)
 
 	// Create a new router for each test
 	suite.router = gin.New()
@@ -1126,6 +1134,481 @@ func (suite *OrderIntegrationTestSuite) TestOrderStatusUpdateWorkflow_CustomerCa
 	var unchangedOrder models.Order
 	suite.db.First(&unchangedOrder, order.ID)
 	assert.Equal(suite.T(), "accepted", unchangedOrder.Status)
+}
+
+// ITERATION 16 INTEGRATION TESTS: Reorder Functionality
+
+// TestReorderWorkflow_SuccessfulReorder tests the complete happy path of reordering a delivered order
+func (suite *OrderIntegrationTestSuite) TestReorderWorkflow_SuccessfulReorder() {
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	// Create technician
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Create a completed (delivered) order with image
+	price := 45.00
+	imageKey := "orders/test-image.png"
+	originalOrder := models.Order{
+		Description:  "Pink nails with glitter",
+		Quantity:     2,
+		Status:       "delivered",
+		Price:        &price,
+		ImageS3Key:   &imageKey,
+		CustomerID:   customer.ID,
+		TechnicianID: &technician.ID,
+	}
+	suite.db.Create(&originalOrder)
+
+	// Setup router with customer authentication
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.POST("/orders/:id/reorder", suite.mockAuthMiddleware(customer.Auth0ID, "customer"), controllers.ReorderOrder)
+	}
+
+	// Reorder with different quantity
+	reorderBody := map[string]interface{}{
+		"quantity": 5,
+	}
+	reorderBodyJSON, _ := json.Marshal(reorderBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/orders/1/reorder", bytes.NewBuffer(reorderBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Assertions
+	assert.Equal(suite.T(), http.StatusCreated, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.True(suite.T(), response["success"].(bool))
+
+	// Verify response data
+	orderData := response["data"].(map[string]interface{})
+	assert.Equal(suite.T(), "Pink nails with glitter", orderData["description"])
+	assert.Equal(suite.T(), float64(5), orderData["quantity"])
+	assert.Equal(suite.T(), "submitted", orderData["status"])
+	assert.Nil(suite.T(), orderData["price"])
+	assert.Nil(suite.T(), orderData["feedback"])
+	assert.Nil(suite.T(), orderData["technician_id"])
+	assert.Equal(suite.T(), imageKey, orderData["image_s3_key"])
+	assert.Equal(suite.T(), float64(originalOrder.ID), orderData["original_order_id"])
+	assert.Equal(suite.T(), float64(customer.ID), orderData["customer_id"])
+
+	// Verify in database
+	var newOrder models.Order
+	suite.db.Where("original_order_id = ?", originalOrder.ID).First(&newOrder)
+	assert.Equal(suite.T(), "Pink nails with glitter", newOrder.Description)
+	assert.Equal(suite.T(), 5, newOrder.Quantity)
+	assert.Equal(suite.T(), "submitted", newOrder.Status)
+	assert.Nil(suite.T(), newOrder.Price)
+	assert.Nil(suite.T(), newOrder.TechnicianID)
+	assert.Equal(suite.T(), &imageKey, newOrder.ImageS3Key)
+	assert.Equal(suite.T(), &originalOrder.ID, newOrder.OriginalOrderID)
+	assert.Equal(suite.T(), customer.ID, newOrder.CustomerID)
+
+	// Verify original order is unchanged
+	var unchangedOriginal models.Order
+	suite.db.First(&unchangedOriginal, originalOrder.ID)
+	assert.Equal(suite.T(), "delivered", unchangedOriginal.Status)
+	assert.Equal(suite.T(), 2, unchangedOriginal.Quantity)
+}
+
+// TestReorderWorkflow_OrderNotDelivered tests that only delivered orders can be reordered
+func (suite *OrderIntegrationTestSuite) TestReorderWorkflow_OrderNotDelivered() {
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	// Test each non-delivered status
+	statuses := []string{"submitted", "accepted", "rejected", "in_production", "shipped"}
+
+	for _, status := range statuses {
+		// Create order with the given status
+		order := models.Order{
+			Description: "Order in " + status + " state",
+			Quantity:    2,
+			Status:      status,
+			CustomerID:  customer.ID,
+		}
+		suite.db.Create(&order)
+
+		// Setup router
+		router := gin.New()
+		v1 := router.Group("/api/v1")
+		{
+			v1.POST("/orders/:id/reorder", suite.mockAuthMiddleware(customer.Auth0ID, "customer"), controllers.ReorderOrder)
+		}
+
+		// Try to reorder
+		reorderBody := map[string]interface{}{
+			"quantity": 3,
+		}
+		reorderBodyJSON, _ := json.Marshal(reorderBody)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/orders/%d/reorder", order.ID), bytes.NewBuffer(reorderBodyJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+
+		// Should get 422 Unprocessable Entity
+		assert.Equal(suite.T(), http.StatusUnprocessableEntity, w.Code, "Status %s should not be reorderable", status)
+
+		var response map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &response)
+		assert.NoError(suite.T(), err)
+		assert.False(suite.T(), response["success"].(bool))
+
+		errorData := response["error"].(map[string]interface{})
+		assert.Equal(suite.T(), "INVALID_ORDER_STATE", errorData["code"])
+		assert.Equal(suite.T(), "Only completed (delivered) orders can be reordered", errorData["message"])
+	}
+}
+
+// TestReorderWorkflow_CustomerCannotReorderOthersOrders tests that customers can only reorder their own orders
+func (suite *OrderIntegrationTestSuite) TestReorderWorkflow_CustomerCannotReorderOthersOrders() {
+	// Create two customers
+	customer1 := models.User{
+		Auth0ID: "auth0|customer1",
+		Name:    "Customer One",
+		Email:   "customer1@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer1)
+
+	customer2 := models.User{
+		Auth0ID: "auth0|customer2",
+		Name:    "Customer Two",
+		Email:   "customer2@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer2)
+
+	// Create delivered order for customer1
+	order := models.Order{
+		Description: "Customer1's delivered order",
+		Quantity:    2,
+		Status:      "delivered",
+		CustomerID:  customer1.ID,
+	}
+	suite.db.Create(&order)
+
+	// Setup router with customer2's authentication
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.POST("/orders/:id/reorder", suite.mockAuthMiddleware(customer2.Auth0ID, "customer"), controllers.ReorderOrder)
+	}
+
+	// Customer2 tries to reorder customer1's order
+	reorderBody := map[string]interface{}{
+		"quantity": 3,
+	}
+	reorderBodyJSON, _ := json.Marshal(reorderBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/orders/1/reorder", bytes.NewBuffer(reorderBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Should be forbidden
+	assert.Equal(suite.T(), http.StatusForbidden, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.False(suite.T(), response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "FORBIDDEN", errorData["code"])
+	assert.Equal(suite.T(), "You can only reorder your own orders", errorData["message"])
+}
+
+// TestReorderWorkflow_TechnicianCannotReorder tests that technicians cannot reorder orders
+func (suite *OrderIntegrationTestSuite) TestReorderWorkflow_TechnicianCannotReorder() {
+	// Create customer and technician
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	technician := models.User{
+		Auth0ID: "auth0|tech",
+		Name:    "Test Technician",
+		Email:   "tech@test.com",
+		Role:    "technician",
+	}
+	suite.db.Create(&technician)
+
+	// Create delivered order
+	order := models.Order{
+		Description: "Delivered order",
+		Quantity:    2,
+		Status:      "delivered",
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&order)
+
+	// Setup router with technician authentication
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.POST("/orders/:id/reorder", suite.mockAuthMiddleware(technician.Auth0ID, "technician"), controllers.ReorderOrder)
+	}
+
+	// Technician tries to reorder
+	reorderBody := map[string]interface{}{
+		"quantity": 3,
+	}
+	reorderBodyJSON, _ := json.Marshal(reorderBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/orders/1/reorder", bytes.NewBuffer(reorderBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Should be forbidden
+	assert.Equal(suite.T(), http.StatusForbidden, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.False(suite.T(), response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "FORBIDDEN", errorData["code"])
+	assert.Equal(suite.T(), "Only customers can reorder", errorData["message"])
+}
+
+// TestReorderWorkflow_InvalidQuantity tests validation of quantity field
+func (suite *OrderIntegrationTestSuite) TestReorderWorkflow_InvalidQuantity() {
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	// Create delivered order
+	order := models.Order{
+		Description: "Delivered order",
+		Quantity:    2,
+		Status:      "delivered",
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&order)
+
+	// Setup router
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.POST("/orders/:id/reorder", suite.mockAuthMiddleware(customer.Auth0ID, "customer"), controllers.ReorderOrder)
+	}
+
+	// Test invalid quantities
+	invalidQuantities := []interface{}{0, -1, "invalid"}
+
+	for _, qty := range invalidQuantities {
+		reorderBody := map[string]interface{}{
+			"quantity": qty,
+		}
+		reorderBodyJSON, _ := json.Marshal(reorderBody)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/orders/1/reorder", bytes.NewBuffer(reorderBodyJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+
+		// Should get validation error
+		assert.Equal(suite.T(), http.StatusBadRequest, w.Code, "Quantity %v should be invalid", qty)
+
+		var response map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &response)
+		assert.NoError(suite.T(), err)
+		assert.False(suite.T(), response["success"].(bool))
+
+		errorData := response["error"].(map[string]interface{})
+		assert.Equal(suite.T(), "VALIDATION_ERROR", errorData["code"])
+	}
+}
+
+// TestReorderWorkflow_MissingQuantity tests that quantity is required
+func (suite *OrderIntegrationTestSuite) TestReorderWorkflow_MissingQuantity() {
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	// Create delivered order
+	order := models.Order{
+		Description: "Delivered order",
+		Quantity:    2,
+		Status:      "delivered",
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&order)
+
+	// Setup router
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.POST("/orders/:id/reorder", suite.mockAuthMiddleware(customer.Auth0ID, "customer"), controllers.ReorderOrder)
+	}
+
+	// Try to reorder without quantity
+	reorderBody := map[string]interface{}{}
+	reorderBodyJSON, _ := json.Marshal(reorderBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/orders/1/reorder", bytes.NewBuffer(reorderBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Should get validation error
+	assert.Equal(suite.T(), http.StatusBadRequest, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.False(suite.T(), response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "VALIDATION_ERROR", errorData["code"])
+}
+
+// TestReorderWorkflow_OrderNotFound tests reordering a non-existent order
+func (suite *OrderIntegrationTestSuite) TestReorderWorkflow_OrderNotFound() {
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	// Setup router
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.POST("/orders/:id/reorder", suite.mockAuthMiddleware(customer.Auth0ID, "customer"), controllers.ReorderOrder)
+	}
+
+	// Try to reorder non-existent order
+	reorderBody := map[string]interface{}{
+		"quantity": 3,
+	}
+	reorderBodyJSON, _ := json.Marshal(reorderBody)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/orders/99999/reorder", bytes.NewBuffer(reorderBodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Should get 404
+	assert.Equal(suite.T(), http.StatusNotFound, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(suite.T(), err)
+	assert.False(suite.T(), response["success"].(bool))
+
+	errorData := response["error"].(map[string]interface{})
+	assert.Equal(suite.T(), "ORDER_NOT_FOUND", errorData["code"])
+	assert.Equal(suite.T(), "Order not found", errorData["message"])
+}
+
+// TestReorderWorkflow_MultipleReorders tests that an order can be reordered multiple times
+func (suite *OrderIntegrationTestSuite) TestReorderWorkflow_MultipleReorders() {
+	// Create customer
+	customer := models.User{
+		Auth0ID: "auth0|customer",
+		Name:    "Test Customer",
+		Email:   "customer@test.com",
+		Role:    "customer",
+	}
+	suite.db.Create(&customer)
+
+	// Create delivered order
+	imageKey := "orders/test.png"
+	originalOrder := models.Order{
+		Description: "Original delivered order",
+		Quantity:    2,
+		Status:      "delivered",
+		ImageS3Key:  &imageKey,
+		CustomerID:  customer.ID,
+	}
+	suite.db.Create(&originalOrder)
+
+	// Setup router
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	{
+		v1.POST("/orders/:id/reorder", suite.mockAuthMiddleware(customer.Auth0ID, "customer"), controllers.ReorderOrder)
+	}
+
+	// Reorder the same order 3 times
+	for i := 1; i <= 3; i++ {
+		reorderBody := map[string]interface{}{
+			"quantity": i + 2,
+		}
+		reorderBodyJSON, _ := json.Marshal(reorderBody)
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/orders/1/reorder", bytes.NewBuffer(reorderBodyJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+
+		assert.Equal(suite.T(), http.StatusCreated, w.Code)
+
+		var response map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &response)
+		assert.NoError(suite.T(), err)
+		assert.True(suite.T(), response["success"].(bool))
+	}
+
+	// Verify 3 reorders were created
+	var reorders []models.Order
+	suite.db.Where("original_order_id = ?", originalOrder.ID).Find(&reorders)
+	assert.Equal(suite.T(), 3, len(reorders))
+
+	// Verify all reorders have correct properties
+	for i, reorder := range reorders {
+		assert.Equal(suite.T(), "Original delivered order", reorder.Description)
+		assert.Equal(suite.T(), i+3, reorder.Quantity)
+		assert.Equal(suite.T(), "submitted", reorder.Status)
+		assert.Equal(suite.T(), &imageKey, reorder.ImageS3Key)
+		assert.Equal(suite.T(), &originalOrder.ID, reorder.OriginalOrderID)
+	}
 }
 
 // TestOrderIntegrationSuite runs the test suite

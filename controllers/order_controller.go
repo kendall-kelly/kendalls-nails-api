@@ -765,6 +765,159 @@ func UpdateOrderStatus(c *gin.Context) {
 	})
 }
 
+// ReorderRequest represents the request body for reordering an order
+type ReorderRequest struct {
+	Quantity int `json:"quantity" binding:"required,gt=0"`
+}
+
+// ReorderOrder handles POST /api/v1/orders/:id/reorder - creates a new order based on an existing order
+func ReorderOrder(c *gin.Context) {
+	// Extract Auth0 user ID from JWT token
+	auth0ID, err := middleware.GetUserID(c)
+	if err != nil {
+		c.PureJSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "UNAUTHORIZED",
+				"message": "Could not extract user information",
+			},
+		})
+		return
+	}
+
+	// Find the user in the database
+	db := config.GetDB()
+	var user models.User
+	if err := db.Where("auth0_id = ?", auth0ID).First(&user).Error; err != nil {
+		c.PureJSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "USER_NOT_FOUND",
+				"message": "User profile not found. Please create a profile first.",
+			},
+		})
+		return
+	}
+
+	// Check if user is a customer (only customers can reorder)
+	if user.Role != "customer" {
+		c.PureJSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "FORBIDDEN",
+				"message": "Only customers can reorder",
+			},
+		})
+		return
+	}
+
+	// Get order ID from URL parameter
+	orderID := c.Param("id")
+	if orderID == "" {
+		c.PureJSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "Order ID is required",
+			},
+		})
+		return
+	}
+
+	// Fetch the original order
+	var originalOrder models.Order
+	if err := db.First(&originalOrder, orderID).Error; err != nil {
+		c.PureJSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "ORDER_NOT_FOUND",
+				"message": "Order not found",
+			},
+		})
+		return
+	}
+
+	// Verify that the user owns this order (only the customer can reorder their own orders)
+	if originalOrder.CustomerID != user.ID {
+		c.PureJSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "FORBIDDEN",
+				"message": "You can only reorder your own orders",
+			},
+		})
+		return
+	}
+
+	// Verify that the order is in a completed state (delivered)
+	if originalOrder.Status != "delivered" {
+		c.PureJSON(http.StatusUnprocessableEntity, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_ORDER_STATE",
+				"message": "Only completed (delivered) orders can be reordered",
+			},
+		})
+		return
+	}
+
+	// Parse request body for new quantity
+	var req ReorderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.PureJSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request data",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	// Create new order based on the original
+	newOrder := models.Order{
+		Description:     originalOrder.Description,
+		Quantity:        req.Quantity,
+		Status:          "submitted",
+		ImageS3Key:      originalOrder.ImageS3Key, // Copy the S3 key (same image)
+		CustomerID:      user.ID,
+		OriginalOrderID: &originalOrder.ID, // Link to original order
+	}
+
+	// Save the new order
+	if err := db.Create(&newOrder).Error; err != nil {
+		c.PureJSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DATABASE_ERROR",
+				"message": "Failed to create reorder",
+			},
+		})
+		return
+	}
+
+	// Load the customer relationship to return complete data
+	if err := db.Preload("Customer").First(&newOrder, newOrder.ID).Error; err != nil {
+		c.PureJSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DATABASE_ERROR",
+				"message": "Failed to load order details",
+			},
+		})
+		return
+	}
+
+	// Generate presigned URL for image
+	populateOrderImageURL(&newOrder)
+
+	c.PureJSON(http.StatusCreated, gin.H{
+		"success": true,
+		"data":    newOrder,
+	})
+}
+
 // AssignOrder handles PUT /api/v1/orders/:id/assign - assigns an order to the current technician
 func AssignOrder(c *gin.Context) {
 	// Extract Auth0 user ID from JWT token

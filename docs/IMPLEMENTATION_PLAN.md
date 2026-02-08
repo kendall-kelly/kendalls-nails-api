@@ -470,41 +470,11 @@ Response: {"success": true, "data": [messages...]}
 
 ---
 
-### Iteration 13: Message Notifications (Simple Version)
-**Duration**: 1-2 hours
-**Complexity**: Beginner
-
-**What you'll build:**
-- Add `UnreadCount` to Order model
-- Increment unread count when message is sent
-- Add endpoint to mark messages as read
-
-**Deliverable:**
-```bash
-GET /api/v1/orders/:id
-Response includes: {"unread_messages": 3}
-
-PUT /api/v1/orders/:id/messages/read
-(marks all messages as read)
-```
-
-**How to test:**
-- Send message and verify unread count increases
-- Mark as read and verify count resets
-- Test from both customer and technician perspective
-
-**What a junior engineer learns:**
-- Denormalized counters for performance
-- Updating related records
-- Simple notification systems
-
----
-
-## Phase 5: Design Gallery (Iterations 14-16)
+## Phase 5: Design Gallery (Iterations 14-15)
 
 Goal: Allow customers to share designs publicly and interact with them.
 
-### Iteration 14: Design Gallery Model & Visibility Toggle
+### Iteration 13: Design Gallery Model & Visibility Toggle
 **Duration**: 2-3 hours
 **Complexity**: Intermediate
 
@@ -533,7 +503,7 @@ Body: {"is_public": true}
 
 ---
 
-### Iteration 15: Browse Public Designs
+### Iteration 14: Browse Public Designs
 **Duration**: 2-3 hours
 **Complexity**: Beginner-Intermediate
 
@@ -562,7 +532,7 @@ GET /api/v1/designs/:id (get single design)
 
 ---
 
-### Iteration 16: Design Comments
+### Iteration 15: Design Comments
 **Duration**: 2-3 hours
 **Complexity**: Beginner-Intermediate
 
@@ -593,13 +563,14 @@ GET /api/v1/designs/:id/comments
 
 ---
 
-## Phase 6: Advanced Features (Iterations 17-18)
+## Phase 6: Advanced Features (Iterations 16-17)
 
 Goal: Add remaining features to complete MVP.
 
-### Iteration 17: Reorder Functionality
+### Iteration 16: Reorder Functionality ✅
 **Duration**: 2-3 hours
 **Complexity**: Intermediate
+**Status**: COMPLETED
 
 **What you'll build:**
 - Implement "Reorder" endpoint
@@ -627,42 +598,11 @@ Response: {"success": true, "data": {new order...}}
 
 ---
 
-### Iteration 18: Technician Invitation System
-**Duration**: 3-4 hours
-**Complexity**: Advanced
-
-**What you'll build:**
-- Implement "Invite technician" endpoint (admin/existing tech only)
-- Call Auth0 Management API to create user
-- Send invitation email via Auth0
-- Restrict who can invite (role check)
-
-**Deliverable:**
-```bash
-POST /api/v1/auth/technicians/invite
-Body: {"email": "tech@example.com", "name": "Jane Doe"}
-```
-
-**How to test:**
-- Invite a technician as admin
-- Receive invitation email
-- Complete signup flow
-- Verify new technician can log in and review orders
-- Try to invite as customer (should fail)
-
-**What a junior engineer learns:**
-- External API integration (Auth0 Management API)
-- Role-based permissions
-- User provisioning
-- Email workflows
-
----
-
-## Phase 7: Polish & Deployment (Iterations 19-21)
+## Phase 7: Polish & Deployment (Iterations 17-19)
 
 Goal: Prepare for production deployment.
 
-### Iteration 19: Error Handling & Validation
+### Iteration 17: Error Handling & Validation
 **Duration**: 2-3 hours
 **Complexity**: Intermediate
 
@@ -689,7 +629,7 @@ Goal: Prepare for production deployment.
 
 ---
 
-### Iteration 20: Rate Limiting & Security
+### Iteration 18: Rate Limiting & Security
 **Duration**: 2-3 hours
 **Complexity**: Intermediate
 
@@ -717,7 +657,7 @@ Goal: Prepare for production deployment.
 
 ---
 
-### Iteration 21: Heroku Deployment
+### Iteration 19: Heroku Deployment
 **Duration**: 3-4 hours
 **Complexity**: Intermediate-Advanced
 

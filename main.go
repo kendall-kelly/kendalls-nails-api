@@ -83,6 +83,7 @@ func main() {
 		v1.POST("/orders", middleware.EnsureValidToken(cfg), controllers.CreateOrder)
 		v1.GET("/orders", middleware.EnsureValidToken(cfg), controllers.ListOrders)
 		v1.GET("/orders/:id", middleware.EnsureValidToken(cfg), controllers.GetOrder)
+		v1.POST("/orders/:id/reorder", middleware.EnsureValidToken(cfg), controllers.ReorderOrder)
 		v1.PUT("/orders/:id/assign", middleware.EnsureValidToken(cfg), controllers.AssignOrder)
 		v1.PUT("/orders/:id/review", middleware.EnsureValidToken(cfg), controllers.ReviewOrder)
 		v1.PUT("/orders/:id/status", middleware.EnsureValidToken(cfg), controllers.UpdateOrderStatus)
