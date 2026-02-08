@@ -31,7 +31,7 @@ func main() {
 
 	// Auto-migrate database models
 	db := config.GetDB()
-	if err := db.AutoMigrate(&models.User{}, &models.Order{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Order{}, &models.Message{}); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 	log.Println("Database migration completed successfully")
@@ -86,6 +86,10 @@ func main() {
 		v1.PUT("/orders/:id/assign", middleware.EnsureValidToken(cfg), controllers.AssignOrder)
 		v1.PUT("/orders/:id/review", middleware.EnsureValidToken(cfg), controllers.ReviewOrder)
 		v1.PUT("/orders/:id/status", middleware.EnsureValidToken(cfg), controllers.UpdateOrderStatus)
+
+		// Message routes
+		v1.POST("/orders/:id/messages", middleware.EnsureValidToken(cfg), controllers.SendMessage)
+		v1.GET("/orders/:id/messages", middleware.EnsureValidToken(cfg), controllers.ListMessages)
 	}
 
 	// Start server

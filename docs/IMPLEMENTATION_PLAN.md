@@ -438,9 +438,10 @@ GET /api/v1/uploads/:filename (serve the uploaded file)
 
 Goal: Enable messaging between customers and technicians.
 
-### Iteration 12: Order Messages
+### Iteration 12: Order Messages ✅
 **Duration**: 2-3 hours
 **Complexity**: Beginner-Intermediate
+**Status**: COMPLETED
 
 **What you'll build:**
 - Create `Message` model (OrderID, SenderID, Text, CreatedAt)
@@ -465,7 +466,6 @@ Response: {"success": true, "data": [messages...]}
 
 **What a junior engineer learns:**
 - Creating related records (Messages belong to Order and User)
-- Conversation threading
 - Authorization (can only message on your own orders)
 
 ---
